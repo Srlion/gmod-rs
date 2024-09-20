@@ -1,9 +1,4 @@
 [workspace]
-members = [
-	"gmod",
-	"gmod-macros"
-]
-exclude = [
-	"examples/my-first-binary-module",
-	"examples/printing-to-console"
-]
+resolver = "2"
+members = ["gmod", "gmod-macros"]
+exclude = ["examples/my-first-binary-module", "examples/printing-to-console"]
