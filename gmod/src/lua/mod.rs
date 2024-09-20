@@ -6,6 +6,7 @@ use std::cell::Cell;
 pub use import::*;
 
 mod lua_state;
+pub use lua_state::LuaCStr;
 pub use lua_state::LuaState as State;
 
 mod push;
