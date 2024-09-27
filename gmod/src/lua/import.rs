@@ -19,6 +19,10 @@ pub const LUA_REGISTRYINDEX: i32 = -10000;
 pub const LUA_ENVIRONINDEX: i32 = -10001;
 pub const LUA_GLOBALSINDEX: i32 = -10002;
 
+pub fn lua_upvalueindex(i: u8) -> i32 {
+    LUA_GLOBALSINDEX - i as i32
+}
+
 pub const LUA_MULTRET: i32 = -1;
 pub const LUA_NOREF: LuaReference = -2;
 pub const LUA_REFNIL: LuaReference = -1;
@@ -43,6 +47,12 @@ pub const LUA_ERRERR: i32 = 5;
 pub const LUA_ERRFILE: i32 = LUA_ERRERR + 1;
 
 pub const LUA_IDSIZE: usize = 60;
+
+#[repr(C)]
+pub struct LuaReg {
+    pub name: LuaString,
+    pub func: Option<LuaFunction>,
+}
 
 impl LuaError {
     fn get_error_message(lua_state: LuaState) -> Option<String> {
@@ -130,6 +140,10 @@ pub struct LuaShared {
     pub(crate) library: &'static libloading::Library,
     pub lual_newstate: Symbol<'static, unsafe extern "C-unwind" fn() -> LuaState>,
     pub lual_openlibs: Symbol<'static, unsafe extern "C-unwind" fn(state: LuaState)>,
+    pub lual_register: Symbol<
+        'static,
+        unsafe extern "C-unwind" fn(state: LuaState, libname: LuaString, l: *const LuaReg),
+    >,
     pub lual_loadfile:
         Symbol<'static, unsafe extern "C-unwind" fn(state: LuaState, path: LuaString) -> i32>,
     pub lual_loadstring:
@@ -142,6 +156,10 @@ pub struct LuaShared {
             sz: LuaSize,
             name: LuaString,
         ) -> i32,
+    >,
+    pub lual_traceback: Symbol<
+        'static,
+        unsafe extern "C-unwind" fn(state: LuaState, state1: LuaState, msg: LuaString, level: i32),
     >,
     pub lua_getfield:
         Symbol<'static, unsafe extern "C-unwind" fn(state: LuaState, index: i32, k: LuaString)>,
@@ -286,11 +304,13 @@ impl LuaShared {
             Self {
                 lual_newstate: find_symbol!("luaL_newstate"),
                 lual_openlibs: find_symbol!("luaL_openlibs"),
+                lual_register: find_symbol!("luaL_register"),
                 lua_pushlightuserdata: find_symbol!("lua_pushlightuserdata"),
                 lual_checktype: find_symbol!("luaL_checktype"),
                 lual_loadfile: find_symbol!("luaL_loadfile"),
                 lual_loadstring: find_symbol!("luaL_loadstring"),
                 lual_loadbuffer: find_symbol!("luaL_loadbuffer"),
+                lual_traceback: find_symbol!("luaL_traceback"),
                 lua_getfield: find_symbol!("lua_getfield"),
                 lua_pushvalue: find_symbol!("lua_pushvalue"),
                 lua_pushboolean: find_symbol!("lua_pushboolean"),

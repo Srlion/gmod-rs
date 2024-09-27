@@ -1,8 +1,9 @@
 #![allow(unused)]
-
-mod import;
 use std::cell::Cell;
 
+use anyhow::Result;
+
+mod import;
 pub use import::*;
 
 mod lua_state;
@@ -47,6 +48,24 @@ pub enum LuaError {
     /// Unknown Lua error code
     Unknown(i32),
 }
+
+impl std::fmt::Display for LuaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            LuaError::MemoryAllocationError => write!(f, "Out of memory"),
+            LuaError::SyntaxError(Some(s)) => write!(f, "Syntax error: {}", s),
+            LuaError::SyntaxError(None) => write!(f, "Syntax error"),
+            LuaError::FileError(Some(s)) => write!(f, "File error: {}", s),
+            LuaError::FileError(None) => write!(f, "File error"),
+            LuaError::RuntimeError(Some(s)) => write!(f, "Runtime error: {}", s),
+            LuaError::RuntimeError(None) => write!(f, "Runtime error"),
+            LuaError::ErrorHandlerError => write!(f, "Error handler error"),
+            LuaError::Unknown(i) => write!(f, "Unknown Lua error code: {}", i),
+        }
+    }
+}
+
+impl std::error::Error for LuaError {}
 
 /// Enforces a debug assertion that the Lua stack is unchanged after this block of code is executed.
 ///
@@ -111,7 +130,7 @@ macro_rules! lua_stack_guard {
     }};
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct LuaDebug {
     pub event: i32,

@@ -25,11 +25,13 @@ pub unsafe fn add_network_strings<S: AsRef<str>>(lua: lua::State, network_string
 }
 
 #[inline(always)]
-pub unsafe fn receive<S: AsRef<str>>(lua: lua::State, network_string: S, func: LuaFunction) {
+pub fn receive<S: AsRef<str>>(lua: lua::State, network_string: S, func: LuaFunction) {
     lua.get_global(c"net");
     lua.get_field(-1, c"Receive");
     lua.push_string(network_string.as_ref());
     lua.push_function(func);
-    lua.call(2, 0);
+    unsafe {
+        lua.call(2, 0);
+    };
     lua.pop();
 }

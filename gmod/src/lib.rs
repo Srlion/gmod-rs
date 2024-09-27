@@ -14,6 +14,7 @@ pub use libloading;
 
 /// Lua interface
 pub mod lua;
+pub use lua::*;
 
 /// Userdata types
 pub mod userdata;
@@ -31,6 +32,7 @@ pub fn is_x86_64() -> bool {
 
     #[cfg(target_pointer_width = "32")]
     {
+        use std::sync::LazyLock;
         static IS_X86_64: LazyLock<bool> = LazyLock::new(|| {
             {
                 use std::path::PathBuf;
@@ -270,6 +272,41 @@ macro_rules! __private__gmod_rs__try_chained_open {
 			break Err(errors);
 		}
 	};
+}
+
+#[macro_export]
+macro_rules! rstr {
+    ($cstring:expr) => {{
+        let cstring_ptr = $cstring;
+        let cstr = unsafe { std::ffi::CStr::from_ptr(cstring_ptr) };
+        cstr.to_str().expect("Couldn't unwrap CString")
+    }};
+}
+
+#[macro_export]
+macro_rules! lua_regs {
+    (
+        $(
+            $name:literal => $func:expr
+        ),* $(,)?
+    ) => {
+        &[
+            $(
+                LuaReg {
+                    name: concat!($name, "\0").as_ptr() as *const i8,
+                    func: Some($func),
+                }
+            ),*,
+            LuaReg {
+                name: std::ptr::null(),
+                func: None,
+            }
+        ]
+    };
+}
+
+pub fn cstring(s: &str) -> std::ffi::CString {
+    std::ffi::CString::new(s).expect("Failed to create CString")
 }
 
 /// You don't need to use this if you are using the `#[gmod13_open]` macro.

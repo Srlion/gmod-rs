@@ -19,6 +19,6 @@ default = []
 gmcl = ["gmod-macros/gmcl"]
 
 [dependencies]
+anyhow = "1.0.89"
 gmod-macros = { version = "2.0.1", path = "../gmod-macros" }
-
 libloading = "0.8"
