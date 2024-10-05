@@ -1,34 +1,15 @@
 use std::{backtrace, borrow::Cow, ffi::c_void, mem::MaybeUninit};
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use gmod_macros::lua_function;
+use number::LuaPushNumber;
 
 use crate::{lua::*, rstr, userdata::TaggedUserData};
 
 pub type LuaCStr<'a> = &'a std::ffi::CStr;
 
-unsafe fn handle_pcall_ignore(lua: State) {
-    crate::lua_stack_guard!(lua => {
-        lua.get_global(c"ErrorNoHaltWithStack");
-        if lua.is_nil(-1) {
-            eprintln!("[ERROR] {:?}", lua.get_string(-2));
-            lua.pop();
-        } else {
-            #[cfg(debug_assertions)] {
-                lua.push_string(&format!("[pcall_ignore] {}", lua.get_string(-2).expect("Expected a string here")));
-            }
-            #[cfg(not(debug_assertions))] {
-                lua.push_value(-2);
-            }
-
-            lua.call(1, 0);
-        }
-    });
-    lua.pop();
-}
-
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LuaState(pub *mut std::ffi::c_void);
 
 impl LuaState {
@@ -118,25 +99,42 @@ impl LuaState {
     }
 
     #[inline(always)]
-    pub fn get_userdata<'a, T>(&self, idx: i32, meta_name: LuaCStr) -> Result<&'a mut T> {
-        if self.is_userdata(idx) {
+    pub fn get_userdata<'a, T>(&self, idx: i32, meta_name: Option<LuaCStr>) -> Result<&'a mut T> {
+        if !self.is_userdata(idx) {
+            bail!(
+                "expected a userdata{}",
+                meta_name
+                    .map(|m| format!(" of type: {}", m.to_string_lossy()))
+                    .unwrap_or_default()
+            );
+        }
+
+        if let Some(meta_name) = meta_name {
             self.get_metatable(idx);
             self.get_metatable_name(meta_name);
 
             let res = self.raw_equal(-1, -2);
             self.pop_n(2);
-            if res {
-                let ud = self.to_userdata(idx) as *mut T;
-                if !ud.is_null() {
-                    return Ok(unsafe { &mut *ud });
-                }
+
+            if !res {
+                bail!(
+                    "expected a userdata of type: {}",
+                    meta_name.to_string_lossy()
+                );
             }
         }
 
-        bail!(
-            "expected a userdata of type: {}",
-            meta_name.to_string_lossy()
-        );
+        let ud = self.to_userdata(idx) as *mut T;
+        if ud.is_null() {
+            bail!("invalid userdata pointer");
+        }
+
+        let alignment = std::mem::align_of::<T>();
+        if (ud as usize) % alignment != 0 {
+            bail!("invalid userdata pointer alignment");
+        }
+
+        Ok(unsafe { &mut *ud })
     }
 
     #[inline(always)]
@@ -199,12 +197,10 @@ impl LuaState {
 
     #[inline(always)]
     pub fn is_userdata(&self, index: i32) -> bool {
-        unsafe { (LUA_SHARED.lua_type)(*self, index) == LUA_TUSERDATA }
-    }
-
-    #[inline(always)]
-    pub fn is_lightuserdata(&self, index: i32) -> bool {
-        unsafe { (LUA_SHARED.lua_type)(*self, index) == LUA_TLIGHTUSERDATA }
+        unsafe {
+            let ty = (LUA_SHARED.lua_type)(*self, index);
+            ty == LUA_TUSERDATA || ty == LUA_TLIGHTUSERDATA
+        }
     }
 
     #[inline(always)]
@@ -248,12 +244,15 @@ impl LuaState {
     }
 
     #[inline(always)]
-    pub fn push_integer(&self, int: LuaInt) {
-        unsafe { (LUA_SHARED.lua_pushinteger)(*self, int) }
+    pub fn push_number<N>(&self, num: N)
+    where
+        N: LuaPushNumber,
+    {
+        num.lua_push_number(*self);
     }
 
     #[inline(always)]
-    pub fn push_number(&self, num: LuaNumber) {
+    pub fn lua_push_number(&self, num: LuaNumber) {
         unsafe { (LUA_SHARED.lua_pushnumber)(*self, num) }
     }
 
@@ -263,13 +262,13 @@ impl LuaState {
     }
 
     #[inline(always)]
-    pub unsafe fn push_thread(&self) -> i32 {
-        (LUA_SHARED.lua_pushthread)(*self)
+    pub fn push_thread(&self) -> i32 {
+        unsafe { (LUA_SHARED.lua_pushthread)(*self) }
     }
 
     #[inline(always)]
-    pub unsafe fn to_thread(&self, index: i32) -> State {
-        (LUA_SHARED.lua_tothread)(*self, index)
+    pub fn to_thread(&self, index: i32) -> State {
+        unsafe { (LUA_SHARED.lua_tothread)(*self, index) }
     }
 
     #[inline(always)]
@@ -287,6 +286,81 @@ impl LuaState {
     /// Returns whether the execution was successful.
     pub fn pcall_ignore(&self, nargs: i32, nresults: i32) -> bool {
         if let Err(err) = self.pcall(nargs, nresults, 0) {
+            self.error_no_halt(&err.to_string(), None);
+            return false;
+        }
+        true
+    }
+
+    /// Check if reference is valid, if it's then check if it's a function and call it.
+    /// You push the arguments before calling this function.
+    /// This function returns true if the function was valid, doesn't care if call was successful or not
+    pub fn pcall_ignore_function_ref(&self, func_ref: i32, nargs: i32, nresults: i32) -> bool {
+        if !self.from_reference(func_ref) {
+            self.pop_n(nargs);
+            return false;
+        }
+
+        if !self.is_function(-1) {
+            self.pop_n(nargs + 1 /*pop the value pushed by from_reference*/);
+            return false;
+        }
+
+        // insert the function before the arguments
+        if nargs > 0 {
+            self.insert(-(nargs + 1));
+        }
+
+        self.pcall_ignore(nargs, nresults);
+        true
+    }
+
+    /// Check if a function is valid, if it is then call it.
+    /// You push the function then the arguments before calling this function.
+    /// This function returns true if the function was valid, doesn't care if call was successful or not
+    pub fn pcall_if_valid_function(&self, nargs: i32, nresults: i32) -> bool {
+        if nargs == 0 {
+            if !self.is_function(-1) {
+                self.pop(); // pop the function
+                return false;
+            }
+        } else if !self.is_function(-nargs - 1) {
+            self.pop_n(nargs + 1 /*pop the function*/);
+            return false;
+        }
+
+        self.pcall_ignore(nargs, nresults);
+        true
+    }
+
+    pub fn is_valid_function_ref(&self, func_ref: i32) -> bool {
+        if !self.from_reference(func_ref) {
+            return false;
+        }
+
+        let is_function = self.is_function(-1);
+        self.pop(); // pop the function
+        is_function
+    }
+
+    #[inline(always)]
+    pub fn cpcall(&self, func: LuaFunction, ud: *mut c_void) -> Result<(), LuaError> {
+        let lua_error_code = unsafe { (LUA_SHARED.lua_cpcall)(*self, func, ud) };
+        if lua_error_code == 0 {
+            Ok(())
+        } else {
+            Err(LuaError::from_lua_state(*self, lua_error_code))
+        }
+    }
+
+    #[inline(always)]
+    pub fn cpcall_ignore(
+        &self,
+        func: LuaFunction,
+        ud: *mut c_void,
+        traceback: Option<&str>,
+    ) -> bool {
+        if let Err(err) = self.cpcall(func, ud) {
             self.error_no_halt(&err.to_string(), None);
             return false;
         }
@@ -325,7 +399,7 @@ impl LuaState {
         self.lual_traceback(state1, level);
         let traceback = self
             .get_string(-1)
-            .unwrap_or(Cow::Borrowed("Unknown error"));
+            .unwrap_or(Cow::Borrowed("Unknown error")); // this shouldn't happen but just in case
         self.pop();
         traceback
     }
@@ -589,11 +663,6 @@ impl LuaState {
     }
 
     #[inline(always)]
-    pub fn to_integer(&self, index: i32) -> LuaInt {
-        unsafe { (LUA_SHARED.lua_tointeger)(*self, index) }
-    }
-
-    #[inline(always)]
     pub fn to_number(&self, index: i32) -> f64 {
         unsafe { (LUA_SHARED.lua_tonumber)(*self, index) }
     }
@@ -640,73 +709,68 @@ impl LuaState {
     }
 
     #[inline(always)]
-    pub unsafe fn coroutine_new(&self) -> State {
-        (LUA_SHARED.lua_newthread)(*self)
-    }
-
-    #[inline(always)]
-    #[must_use]
-    pub unsafe fn coroutine_yield(&self, nresults: i32) -> i32 {
-        (LUA_SHARED.lua_yield)(*self, nresults)
-    }
-
-    #[inline(always)]
-    #[must_use]
-    pub unsafe fn coroutine_resume(&self, narg: i32) -> i32 {
-        (LUA_SHARED.lua_resume)(*self, narg)
+    pub fn coroutine_new(&self) -> LuaState {
+        unsafe { (LUA_SHARED.lua_newthread)(*self) }
     }
 
     #[inline(always)]
     /// Exchange values between different threads of the same global state.
     ///
     /// This function pops `n` values from the stack `self`, and pushes them onto the stack `target_thread`.
-    pub unsafe fn coroutine_exchange(&self, target_thread: State, n: i32) {
-        (LUA_SHARED.lua_xmove)(*self, target_thread, n)
+    pub fn coroutine_exchange(&self, target_thread: LuaState, n: i32) {
+        unsafe { (LUA_SHARED.lua_xmove)(*self, target_thread, n) }
     }
 
     #[inline(always)]
-    pub fn equal(&self, index1: i32, index2: i32) -> bool {
-        unsafe { (LUA_SHARED.lua_equal)(*self, index1, index2) == 1 }
+    #[must_use]
+    pub fn coroutine_yield(&self, nresults: i32) -> i32 {
+        unsafe { (LUA_SHARED.lua_yield)(*self, nresults) }
+    }
+
+    #[inline(always)]
+    #[must_use]
+    pub fn coroutine_resume(&self, narg: i32) -> i32 {
+        unsafe { (LUA_SHARED.lua_resume)(*self, narg) }
     }
 
     #[inline(always)]
     /// See `call`
-    pub unsafe fn coroutine_resume_call(&self, narg: i32) {
-        match (LUA_SHARED.lua_resume)(*self, narg) {
-            LUA_OK => {}
-            LUA_ERRRUN => self.error(
-                self.get_string(-2)
-                    .unwrap_or(Cow::Borrowed("Unknown error"))
-                    .as_ref(),
-            ),
-            LUA_ERRMEM => self.error("Out of memory"),
-            _ => self.error("Unknown internal Lua error"),
+    pub fn coroutine_resume_call(&self, narg: i32) {
+        unsafe {
+            match self.coroutine_resume(narg) {
+                LUA_OK => {}
+                LUA_ERRRUN => self.error(
+                    self.get_string(-2)
+                        .unwrap_or(Cow::Borrowed("Unknown error"))
+                        .as_ref(),
+                ),
+                LUA_ERRMEM => self.error("Out of memory"),
+                _ => self.error("Unknown internal Lua error"),
+            }
         }
     }
 
     #[inline(always)]
     /// See `pcall_ignore`
-    pub unsafe fn coroutine_resume_pcall_ignore(&self, narg: i32) -> Result<i32, ()> {
-        match (LUA_SHARED.lua_resume)(*self, narg) {
+    pub fn coroutine_resume_ignore(&self, narg: i32, traceback: Option<&str>) -> Result<i32, ()> {
+        match self.coroutine_resume(narg) {
             status @ (LUA_OK | LUA_YIELD) => Ok(status),
-            LUA_ERRRUN => {
-                handle_pcall_ignore(*self);
-                Err(())
-            }
             err => {
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "[gmod-rs] coroutine_resume_pcall_ignore unknown error: {}",
-                    err
-                );
+                let err = LuaError::from_lua_state(*self, err);
+                self.error_no_halt(&err.to_string(), traceback);
                 Err(())
             }
         }
     }
 
     #[inline(always)]
-    pub unsafe fn coroutine_status(&self) -> i32 {
-        (LUA_SHARED.lua_status)(*self)
+    pub fn coroutine_status(&self) -> i32 {
+        unsafe { (LUA_SHARED.lua_status)(*self) }
+    }
+
+    #[inline(always)]
+    pub fn equal(&self, index1: i32, index2: i32) -> bool {
+        unsafe { (LUA_SHARED.lua_equal)(*self, index1, index2) == 1 }
     }
 
     /// Creates a new table in the registry with the given `name` as the key if it doesn't already exist, and pushes it onto the stack.
@@ -738,10 +802,11 @@ impl LuaState {
         }
     }
 
+    // lua functions shouldn't be able to call it directly and should instead return Result types, as destructors may not be called
     #[cold]
-    pub unsafe fn error<S: AsRef<str>>(&self, msg: S) -> ! {
+    pub(crate) fn error<S: AsRef<str>>(&self, msg: S) -> ! {
         self.push_string(msg.as_ref());
-        (LUA_SHARED.lua_error)(*self);
+        unsafe { (LUA_SHARED.lua_error)(*self) };
         unreachable!()
     }
 
@@ -909,9 +974,12 @@ impl LuaState {
     }
 
     pub fn error_no_halt(&self, err: &str, traceback: Option<&str>) {
+        let mut error_prefix = "[ERROR] ";
         let err = if let Some(traceback) = traceback {
+            error_prefix = "";
+
             self.get_global(c"ErrorNoHalt");
-            format!("{}\n{}\n", err, traceback)
+            format!("[ERROR] {}\n{}\n", err, traceback)
         } else {
             self.get_global(c"ErrorNoHaltWithStack");
             err.to_string()
@@ -919,11 +987,11 @@ impl LuaState {
 
         if self.is_nil(-1) {
             self.pop();
-            eprintln!("[ERROR] {err}");
+            eprintln!("{error_prefix}{err}");
         } else {
             self.push_string(&err);
             if self.pcall(1, 0, 0).is_err() {
-                eprintln!("[ERROR] {err}");
+                eprintln!("{error_prefix}{err}");
             }
         }
     }

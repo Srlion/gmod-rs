@@ -20,5 +20,8 @@ gmcl = ["gmod-macros/gmcl"]
 
 [dependencies]
 anyhow = "1.0.89"
+defer = "0.2.1"
+fastrand = "2.1.1"
+flume = { version = "0.11.0", default-features = false }
 gmod-macros = { version = "2.0.1", path = "../gmod-macros" }
 libloading = "0.8"

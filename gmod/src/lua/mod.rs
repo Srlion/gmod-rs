@@ -1,5 +1,8 @@
 #![allow(unused)]
 use std::cell::Cell;
+#[allow(unused)]
+use std::cell::UnsafeCell;
+use std::mem::MaybeUninit;
 
 use anyhow::Result;
 
@@ -10,13 +13,16 @@ mod lua_state;
 pub use lua_state::LuaCStr;
 pub use lua_state::LuaState as State;
 
-mod push;
-pub use push::*;
-
 mod returns;
-pub use returns::ValuesReturned;
+pub use returns::HandleLuaFunctionReturn;
+
+mod number;
+
+pub mod task_queue;
 
 mod raw_bind;
+
+pub const LUA_NUMBER_MAX_SAFE_INTEGER: i64 = (2 ^ 53) - 1;
 
 #[derive(Debug, Clone)]
 pub enum LuaError {
@@ -57,7 +63,7 @@ impl std::fmt::Display for LuaError {
             LuaError::SyntaxError(None) => write!(f, "Syntax error"),
             LuaError::FileError(Some(s)) => write!(f, "File error: {}", s),
             LuaError::FileError(None) => write!(f, "File error"),
-            LuaError::RuntimeError(Some(s)) => write!(f, "Runtime error: {}", s),
+            LuaError::RuntimeError(Some(s)) => write!(f, "{}", s),
             LuaError::RuntimeError(None) => write!(f, "Runtime error"),
             LuaError::ErrorHandlerError => write!(f, "Error handler error"),
             LuaError::Unknown(i) => write!(f, "Unknown Lua error code: {}", i),
@@ -150,39 +156,4 @@ pub struct LuaDebug {
 /// Loads lua_shared and imports all functions. This is already done for you if you add `#[gmod::gmod13_open]` to your `gmod13_open` function.
 pub unsafe fn load() {
     import::LUA_SHARED.load()
-}
-
-thread_local! {
-    #[cfg(debug_assertions)]
-    static LUA: Cell<Option<State>> = const { Cell::new(None) };
-
-    #[cfg(not(debug_assertions))]
-    static LUA: Cell<State> = const { Cell::new(State(std::ptr::null_mut())) };
-}
-/// Acquires a pointer to the Lua state for the current thread.
-///
-/// This will panic if called from anywhere but the main thread. This will panic if you are not using the `#[gmod13_open]` macro to open the Lua state.
-///
-/// This will NOT panic in release mode under these conditions and will instead cause undefined behaviour.
-pub unsafe fn state() -> State {
-    LUA.with(|cell| {
-		#[cfg(debug_assertions)] {
-			cell.get().expect("The Lua state cannot be found in this thread. Perhaps you are calling this function from a thread other than the main thread? Perhaps you forgot to use the `#[gmod13_open]` macro?")
-		}
-		#[cfg(not(debug_assertions))] {
-			cell.get()
-		}
-	})
-}
-
-#[doc(hidden)]
-#[allow(non_snake_case)]
-pub fn __set_state__internal(state: State) {
-    LUA.with(|cell| {
-        #[cfg(debug_assertions)]
-        cell.set(Some(state));
-
-        #[cfg(not(debug_assertions))]
-        cell.set(state);
-    })
 }

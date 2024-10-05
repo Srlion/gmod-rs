@@ -14,6 +14,7 @@ pub use libloading;
 
 /// Lua interface
 pub mod lua;
+pub use lua::task_queue::wait_lua_tick;
 pub use lua::*;
 
 /// Userdata types
@@ -21,6 +22,8 @@ pub mod userdata;
 
 /// Net library helpers
 pub mod net;
+
+pub use ::defer::defer;
 
 /// Returns whether this client is running the x86-64 branch
 pub fn is_x86_64() -> bool {
@@ -307,10 +310,4 @@ macro_rules! lua_regs {
 
 pub fn cstring(s: &str) -> std::ffi::CString {
     std::ffi::CString::new(s).expect("Failed to create CString")
-}
-
-/// You don't need to use this if you are using the `#[gmod13_open]` macro.
-pub unsafe fn set_lua_state(state: *mut std::ffi::c_void) {
-    lua::__set_state__internal(lua::State(state));
-    lua::load();
 }

@@ -5,8 +5,9 @@ extern crate syn;
 extern crate quote;
 
 use proc_macro::TokenStream;
-use quote::ToTokens;
 use syn::ItemFn;
+use syn::Pat;
+use syn::PatIdent;
 
 macro_rules! wrap_compile_error {
     ($input:ident, $code:expr) => {{
@@ -16,6 +17,19 @@ macro_rules! wrap_compile_error {
             Err(_) => return orig_tokens,
         }
     }};
+}
+
+fn parse_lua_ident(input: &syn::FnArg) -> syn::Ident {
+    match input {
+        syn::FnArg::Typed(arg) => {
+            if let Pat::Ident(PatIdent { ident, .. }) = &*arg.pat {
+                ident.clone()
+            } else {
+                panic!("Can't use self for lua functions!")
+            }
+        }
+        syn::FnArg::Receiver(_) => panic!("Needs to be a lua state!"),
+    }
 }
 
 fn check_lua_function(input: &mut ItemFn) {
@@ -36,13 +50,59 @@ fn check_lua_function(input: &mut ItemFn) {
     input.sig.abi = Some(syn::parse_quote!(extern "C-unwind"));
 }
 
-fn genericify_return(item_fn: &mut ItemFn) {
-    let stmts = std::mem::take(&mut item_fn.block.stmts);
-    let output = std::mem::replace(&mut item_fn.sig.output, parse_quote!(-> i32));
-    item_fn.block.stmts = vec![syn::parse2(
-        quote!({::gmod::lua::ValuesReturned::from((|| #output {#(#stmts);*})()).into()}),
-    )
-    .unwrap()];
+fn genericify_return(item_fn: &mut ItemFn) -> proc_macro2::TokenStream {
+    // let stmts = std::mem::take(&mut item_fn.block.stmts);
+    // let output = std::mem::replace(&mut item_fn.sig.output, parse_quote!(-> i32));
+
+    let ItemFn {
+        attrs,
+        vis,
+        sig,
+        block,
+    } = item_fn.clone();
+
+    let syn::Signature {
+        output: return_type,
+        inputs,
+        ident: name,
+        ..
+    } = &sig;
+
+    let return_type = match return_type {
+        syn::ReturnType::Default => quote!(()),
+        syn::ReturnType::Type(_, ty) => quote!(#ty),
+    };
+
+    let lua_ident = parse_lua_ident(&inputs[0]);
+
+    let internal_name = syn::Ident::new(
+        &format!("__{name}_internal__"),
+        proc_macro2::Span::call_site(),
+    );
+
+    let output = quote! {
+        #(#attrs)*
+        #vis extern "C-unwind" fn #name(#inputs) -> i32
+        {
+            #(#attrs)*
+            #[inline]
+            fn #internal_name(#inputs) -> #return_type
+            {
+                #block
+            }
+
+            use ::gmod::lua::HandleLuaFunctionReturn;
+            {
+                fn assert_send<T: ::gmod::lua::HandleLuaFunctionReturn>() {}
+                fn assert() {
+                    assert_send::<#return_type>();
+                }
+            }
+            #internal_name(#lua_ident).handle_result(#lua_ident)
+        }
+    };
+
+    output
 }
 
 #[proc_macro_attribute]
@@ -50,42 +110,28 @@ pub fn gmod13_open(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
     wrap_compile_error!(tokens, {
         let mut input = syn::parse::<ItemFn>(tokens)?;
 
-        let lua_ident = format_ident!(
-            "{}",
-            match &input.sig.inputs[0] {
-                syn::FnArg::Typed(arg) => arg.pat.to_token_stream().to_string(),
-                _ => unreachable!(),
-            }
-        );
-
-        // Capture the Lua state
-        input.block.stmts.insert(
-            0,
-            syn::parse2(quote!(::gmod::lua::__set_state__internal(#lua_ident);)).unwrap(),
-        );
-
-        // Load lua_shared
-        input.block.stmts.insert(
-            0,
-            syn::parse2(quote!(
-                #[allow(unused_unsafe)]
-                unsafe {
-                    ::gmod::lua::load()
-                }
-            ))
-            .unwrap(),
-        );
-
         // Make sure it's valid
         check_lua_function(&mut input);
+
+        let lua_ident = parse_lua_ident(&input.sig.inputs[0]);
+
+        let block = input.block;
+        input.block = syn::parse2(quote! {{
+            #[allow(unused_unsafe)]
+            unsafe {
+                ::gmod::lua::load()
+            }
+
+            ::gmod::lua::task_queue::load(#lua_ident);
+
+            #block
+        }})
+        .unwrap();
 
         // No mangling
         input.attrs.push(parse_quote!(#[no_mangle]));
 
-        // Make the return type nice and dynamic
-        genericify_return(&mut input);
-
-        Ok(input.into_token_stream().into())
+        Ok(genericify_return(&mut input).into())
     })
 }
 
@@ -100,10 +146,18 @@ pub fn gmod13_close(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
         // No mangling
         input.attrs.push(parse_quote!(#[no_mangle]));
 
-        // Make the return type nice and dynamic
-        genericify_return(&mut input);
+        let lua_ident = parse_lua_ident(&input.sig.inputs[0]);
 
-        Ok(input.into_token_stream().into())
+        let block = input.block;
+        input.block = syn::parse2(quote! {{
+            ::gmod::defer!(::gmod::lua::task_queue::unload(#lua_ident)); // we should be the last thing to run
+
+            #block
+        }})
+        .unwrap();
+
+        // Make the return type nice and dynamic
+        Ok(genericify_return(&mut input).into())
     })
 }
 
@@ -116,8 +170,6 @@ pub fn lua_function(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
         check_lua_function(&mut input);
 
         // Make the return type nice and dynamic
-        genericify_return(&mut input);
-
-        Ok(input.into_token_stream().into())
+        Ok(genericify_return(&mut input).into())
     })
 }

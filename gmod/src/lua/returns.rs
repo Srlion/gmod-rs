@@ -1,73 +1,44 @@
-use std::{num::NonZeroI32, borrow::Cow};
+use std::{borrow::Cow, num::NonZeroI32};
 
-#[repr(transparent)]
-pub struct ValuesReturned(pub i32);
+use super::State;
 
-impl From<ValuesReturned> for i32 {
-	#[inline(always)]
-	fn from(v: ValuesReturned) -> Self {
-		v.0
-	}
+pub trait HandleLuaFunctionReturn {
+    fn handle_result(self, l: State) -> i32;
 }
 
-impl From<i32> for ValuesReturned {
-	#[inline(always)]
-	fn from(n: i32) -> Self {
-		ValuesReturned(n)
-	}
+impl HandleLuaFunctionReturn for i32 {
+    #[inline(always)]
+    fn handle_result(self, l: State) -> i32 {
+        self
+    }
 }
 
-impl From<NonZeroI32> for ValuesReturned {
-	#[inline(always)]
-	fn from(n: NonZeroI32) -> ValuesReturned {
-		ValuesReturned(i32::from(n))
-	}
+impl<E: DisplayLuaError> HandleLuaFunctionReturn for Result<i32, E> {
+    #[inline(always)]
+    fn handle_result(self, l: State) -> i32 {
+        match self {
+            Ok(vals) => vals,
+            Err(err) => unsafe { l.error(err.display_lua_error().as_ref()) },
+        }
+    }
 }
 
-impl From<()> for ValuesReturned {
-	#[inline(always)]
-	fn from(_: ()) -> ValuesReturned {
-		ValuesReturned(0)
-	}
-}
-
-impl From<Option<NonZeroI32>> for ValuesReturned {
-	#[inline(always)]
-	fn from(opt: Option<NonZeroI32>) -> ValuesReturned {
-		ValuesReturned(match opt {
-			Some(vals) => i32::from(vals),
-			None => {
-				unsafe { super::state().push_nil() };
-				1
-			},
-		})
-	}
+impl<E: DisplayLuaError> HandleLuaFunctionReturn for Result<(), E> {
+    #[inline(always)]
+    fn handle_result(self, l: State) -> i32 {
+        match self {
+            Ok(_) => 0,
+            Err(err) => unsafe { l.error(err.display_lua_error().as_ref()) },
+        }
+    }
 }
 
 pub trait DisplayLuaError {
-	fn display_lua_error(&self) -> Cow<'_, str>;
+    fn display_lua_error(&self) -> Cow<'_, str>;
 }
 impl<E: std::fmt::Debug> DisplayLuaError for E {
-	#[inline(always)]
-	fn display_lua_error(&self) -> Cow<'_, str> {
-		Cow::Owned(format!("{:?}", self))
-	}
-}
-impl<E: DisplayLuaError> From<Result<i32, E>> for ValuesReturned {
-	#[inline(always)]
-	fn from(res: Result<i32, E>) -> ValuesReturned {
-		match res {
-			Ok(vals) => ValuesReturned(vals),
-			Err(err) => unsafe { super::state().error(err.display_lua_error().as_ref()) }
-		}
-	}
-}
-impl<E: DisplayLuaError> From<Result<(), E>> for ValuesReturned {
-	#[inline(always)]
-	fn from(res: Result<(), E>) -> ValuesReturned {
-		match res {
-			Ok(_) => ValuesReturned(0),
-			Err(err) => unsafe { super::state().error(err.display_lua_error().as_ref()) }
-		}
-	}
+    #[inline(always)]
+    fn display_lua_error(&self) -> Cow<'_, str> {
+        Cow::Owned(format!("{:?}", self))
+    }
 }
