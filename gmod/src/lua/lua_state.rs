@@ -294,16 +294,21 @@ impl LuaState {
 
     /// Check if reference is valid, if it's then check if it's a function and call it.
     /// You push the arguments before calling this function.
-    /// This function returns true if the function was valid, doesn't care if call was successful or not
-    pub fn pcall_ignore_function_ref(&self, func_ref: i32, nargs: i32, nresults: i32) -> bool {
+    /// This function returns a tuple of whether the function was valid and whether the call was successful.
+    pub fn pcall_ignore_function_ref(
+        &self,
+        func_ref: i32,
+        nargs: i32,
+        nresults: i32,
+    ) -> (bool, bool) {
         if !self.from_reference(func_ref) {
             self.pop_n(nargs);
-            return false;
+            return (false, false);
         }
 
         if !self.is_function(-1) {
             self.pop_n(nargs + 1 /*pop the value pushed by from_reference*/);
-            return false;
+            return (false, false);
         }
 
         // insert the function before the arguments
@@ -311,8 +316,7 @@ impl LuaState {
             self.insert(-(nargs + 1));
         }
 
-        self.pcall_ignore(nargs, nresults);
-        true
+        (true, self.pcall_ignore(nargs, nresults))
     }
 
     /// Check if a function is valid, if it is then call it.
