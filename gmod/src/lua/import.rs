@@ -95,7 +95,8 @@ impl LuaSharedInterface {
 
     pub(super) unsafe fn load(&self) {
         if !(*self.0.get()).is_null() {
-            panic!("The Lua state has already been initialized!");
+            eprintln!("The Lua state has already been initialized!");
+            return;
         }
         *self.0.get() = Box::leak(Box::new(LuaShared::import()));
         #[cfg(debug_assertions)]
