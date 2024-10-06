@@ -66,6 +66,10 @@ pub fn load(l: State) {
         l.pcall_ignore(4, 0);
     }
     l.pop();
+
+    unsafe {
+        GMOD_CLOSED = false;
+    }
 }
 
 pub fn unload(l: State) {
