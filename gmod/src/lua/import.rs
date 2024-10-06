@@ -2,7 +2,7 @@ use core::panic;
 #[cfg(debug_assertions)]
 use std::sync::atomic::AtomicI64;
 
-use std::{cell::UnsafeCell, ffi::c_void, thread};
+use std::{cell::UnsafeCell, ffi::c_void, mem::MaybeUninit, thread};
 
 use libloading::{Library, Symbol};
 
@@ -98,10 +98,25 @@ impl LuaSharedInterface {
             eprintln!("The Lua state has already been initialized!");
             return;
         }
-        *self.0.get() = Box::leak(Box::new(LuaShared::import()));
+        *self.0.get() = Box::into_raw(Box::new(LuaShared::import()));
         #[cfg(debug_assertions)]
         {
             *self.1.get() = Box::leak(Box::new(thread::current().id()));
+        }
+    }
+
+    pub(super) unsafe fn unload(&self) {
+        if (*self.0.get()).is_null() {
+            eprintln!("The Lua state has not been initialized yet!");
+            return;
+        }
+        LuaShared::unload();
+        Box::from_raw(*self.0.get());
+        *self.0.get() = std::ptr::null_mut();
+        #[cfg(debug_assertions)]
+        {
+            Box::from_raw(*self.1.get());
+            *self.1.get() = std::ptr::null_mut();
         }
     }
 
@@ -287,12 +302,26 @@ pub struct LuaShared {
         unsafe extern "C-unwind" fn(state: LuaState, index1: i32, index2: i32) -> i32,
     >,
 }
+
 unsafe impl Sync for LuaShared {}
+
+static mut LIBLOADING_LIBRARY: MaybeUninit<Library> = MaybeUninit::uninit();
 impl LuaShared {
+    fn unload() {
+        unsafe {
+            LIBLOADING_LIBRARY.assume_init_read(); // Drop the library
+        }
+    }
+
     fn import() -> Self {
         unsafe {
-            let (library, path) = Self::find_lua_shared();
-            let library = Box::leak(Box::new(library));
+            let library = {
+                let (library, path) = Self::find_lua_shared();
+                unsafe {
+                    LIBLOADING_LIBRARY.write(library);
+                }
+                LIBLOADING_LIBRARY.assume_init_ref()
+            };
 
             macro_rules! find_symbol {
                 ( $symbol:literal ) => {

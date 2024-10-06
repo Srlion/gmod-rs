@@ -150,6 +150,7 @@ pub fn gmod13_close(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
 
         let block = input.block;
         input.block = syn::parse2(quote! {{
+            ::gmod::defer!(unsafe { ::gmod::lua::unload() });
             ::gmod::defer!(::gmod::lua::task_queue::unload(#lua_ident)); // we should be the last thing to run
 
             #block

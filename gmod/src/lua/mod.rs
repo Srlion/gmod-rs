@@ -157,3 +157,8 @@ pub struct LuaDebug {
 pub unsafe fn load() {
     import::LUA_SHARED.load()
 }
+
+#[inline(always)]
+pub unsafe fn unload() {
+    import::LUA_SHARED.unload()
+}
