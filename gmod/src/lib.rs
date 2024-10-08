@@ -288,6 +288,14 @@ macro_rules! rstr {
 
 #[macro_export]
 macro_rules! lua_regs {
+	() => {
+        &[
+            LuaReg {
+                name: std::ptr::null(),
+                func: None,
+            }
+        ]
+    };
     (
         $(
             $name:literal => $func:expr
