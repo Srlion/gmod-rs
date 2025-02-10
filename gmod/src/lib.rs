@@ -292,7 +292,7 @@ macro_rules! lua_regs {
         &[
             LuaReg {
                 name: std::ptr::null(),
-                func: unsafe { std::mem::transmute(std::ptr::null::<()>()) },
+                func: None,
             }
         ]
     };
@@ -305,12 +305,12 @@ macro_rules! lua_regs {
             $(
                 LuaReg {
                     name: concat!($name, "\0").as_ptr() as *const i8,
-                    func: $func,
+                    func: Some($func),
                 }
             ),*,
             LuaReg {
                 name: std::ptr::null(),
-                func: unsafe { std::mem::transmute(std::ptr::null::<()>()) },
+                func: None,
             }
         ]
     };

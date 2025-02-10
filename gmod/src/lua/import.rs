@@ -50,7 +50,7 @@ pub const LUA_IDSIZE: usize = 60;
 #[repr(C)]
 pub struct LuaReg {
     pub name: LuaString,
-    pub func: LuaFunction,
+    pub func: Option<LuaFunction>,
 }
 
 impl LuaError {
