@@ -292,7 +292,7 @@ macro_rules! lua_regs {
         &[
             LuaReg {
                 name: std::ptr::null(),
-                func: unsafe { std::mem::transmute(ptr::null::<()>()) },
+                func: unsafe { std::mem::transmute(std::ptr::null::<()>()) },
             }
         ]
     };
@@ -310,7 +310,7 @@ macro_rules! lua_regs {
             ),*,
             LuaReg {
                 name: std::ptr::null(),
-                func: unsafe { std::mem::transmute(ptr::null::<()>()) },
+                func: unsafe { std::mem::transmute(std::ptr::null::<()>()) },
             }
         ]
     };
