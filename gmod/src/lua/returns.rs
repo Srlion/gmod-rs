@@ -1,4 +1,4 @@
-use std::{borrow::Cow, num::NonZeroI32};
+use std::borrow::Cow;
 
 use super::State;
 
@@ -8,7 +8,7 @@ pub trait HandleLuaFunctionReturn {
 
 impl HandleLuaFunctionReturn for i32 {
     #[inline(always)]
-    fn handle_result(self, l: State) -> i32 {
+    fn handle_result(self, _: State) -> i32 {
         self
     }
 }
@@ -18,7 +18,9 @@ impl<E: DisplayLuaError> HandleLuaFunctionReturn for Result<i32, E> {
     fn handle_result(self, l: State) -> i32 {
         match self {
             Ok(vals) => vals,
-            Err(err) => unsafe { l.error(err.display_lua_error().as_ref()) },
+            // SAFETY: using the #[lua_function] macro, we are ONLY erroring AFTER the function returns
+            // which means that longjmp won't mess up rust's stack
+            Err(err) => l.error(err.display_lua_error().as_ref()),
         }
     }
 }
@@ -28,7 +30,9 @@ impl<E: DisplayLuaError> HandleLuaFunctionReturn for Result<(), E> {
     fn handle_result(self, l: State) -> i32 {
         match self {
             Ok(_) => 0,
-            Err(err) => unsafe { l.error(err.display_lua_error().as_ref()) },
+            // SAFETY: using the #[lua_function] macro, we are ONLY erroring AFTER the function returns
+            // which means that longjmp won't mess up rust's stack
+            Err(err) => l.error(err.display_lua_error().as_ref()),
         }
     }
 }

@@ -1,12 +1,17 @@
-use std::{backtrace, borrow::Cow, ffi::c_void, mem::MaybeUninit};
+use std::{borrow::Cow, ffi::c_void, mem::MaybeUninit};
 
-use anyhow::{anyhow, bail, Result};
-use gmod_macros::lua_function;
-use number::LuaPushNumber;
+use anyhow::{bail, Result};
+use number::LuaNumeric;
 
-use crate::{lua::*, rstr, userdata::TaggedUserData};
+use crate::{lua::*, rstr};
+
+use super::push_to_lua::PushToLua;
 
 pub type LuaCStr<'a> = &'a std::ffi::CStr;
+
+pub unsafe fn cast_cstr_to_static(s: LuaCStr<'_>) -> &'static std::ffi::CStr {
+    std::mem::transmute(s)
+}
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,18 +59,16 @@ impl LuaState {
     /// Returns the Lua string as a slice of bytes.
     ///
     /// Returns None if the value at the given index is not convertible to a string.
-    pub fn get_binary_string(&self, index: i32) -> Option<&[u8]> {
+    pub fn get_binary_string(&self, index: i32) -> Option<Vec<u8>> {
         if !self.is_string(index) {
             return None;
         }
-
         let mut len: usize = 0;
         let ptr = unsafe { (LUA_SHARED.lua_tolstring)(*self, index, &mut len) };
         if ptr.is_null() {
             return None;
         }
-
-        Some(unsafe { std::slice::from_raw_parts(ptr as *const u8, len) })
+        Some(unsafe { std::slice::from_raw_parts(ptr as *const u8, len) }.to_vec())
     }
 
     /// Returns the Lua string as a Rust UTF-8 String.
@@ -75,14 +78,14 @@ impl LuaState {
     /// This is a lossy operation, and will replace any invalid UTF-8 sequences with the Unicode replacement character. See the documentation for `String::from_utf8_lossy` for more information.
     ///
     /// If you need raw data, use `get_binary_string`.
-    pub fn get_string(&self, index: i32) -> Option<Cow<'_, str>> {
+    pub fn get_string(&self, index: i32) -> Option<String> {
         let str = self.get_binary_string(index)?;
-        Some(String::from_utf8_lossy(str))
+        Some(String::from_utf8_lossy(&str).to_string())
     }
 
-    pub fn get_string_unchecked(&self, index: i32) -> Cow<'_, str> {
+    pub fn get_string_unchecked(&self, index: i32) -> String {
         let str = self.get_binary_string(index).unwrap();
-        String::from_utf8_lossy(str)
+        String::from_utf8_lossy(&str).to_string()
     }
 
     /// Returns the name of the type of the value at the given index.
@@ -98,43 +101,26 @@ impl LuaState {
         unsafe { (LUA_SHARED.lua_gettop)(*self) }
     }
 
+    pub fn new_userdata(&self, size: usize) -> *mut c_void {
+        unsafe { (LUA_SHARED.lua_newuserdata)(*self, size) }
+    }
+
     #[inline(always)]
-    pub fn get_userdata<'a, T>(&self, idx: i32, meta_name: Option<LuaCStr>) -> Result<&'a mut T> {
-        if !self.is_userdata(idx) {
-            bail!(
-                "expected a userdata{}",
-                meta_name
-                    .map(|m| format!(" of type: {}", m.to_string_lossy()))
-                    .unwrap_or_default()
-            );
-        }
+    pub fn push_struct<T: rstruct::RStruct>(&self, rstruct: T) {
+        rstruct::push_struct(*self, rstruct);
+    }
 
-        if let Some(meta_name) = meta_name {
-            self.get_metatable(idx);
-            self.get_metatable_name(meta_name);
+    #[inline(always)]
+    pub fn get_struct<T: rstruct::RStruct>(&self, idx: i32) -> Result<&mut T> {
+        rstruct::get_struct(*self, idx)
+    }
 
-            let res = self.raw_equal(-1, -2);
-            self.pop_n(2);
-
-            if !res {
-                bail!(
-                    "expected a userdata of type: {}",
-                    meta_name.to_string_lossy()
-                );
-            }
-        }
-
-        let ud = self.to_userdata(idx) as *mut T;
-        if ud.is_null() {
-            bail!("invalid userdata pointer");
-        }
-
-        let alignment = std::mem::align_of::<T>();
-        if (ud as usize) % alignment != 0 {
-            bail!("invalid userdata pointer alignment");
-        }
-
-        Ok(unsafe { &mut *ud })
+    #[inline(always)]
+    pub fn get_struct_with_ref<T: rstruct::RStruct>(
+        &self,
+        idx: i32,
+    ) -> Result<(&mut T, LuaReference)> {
+        rstruct::get_struct_with_ref(*self, idx)
     }
 
     #[inline(always)]
@@ -144,23 +130,27 @@ impl LuaState {
     ///
     /// Use `dereference` to free the reference from the registry table.
     pub fn reference(&self) -> LuaReference {
-        unsafe { (LUA_SHARED.lual_ref)(*self, LUA_REGISTRYINDEX) }
+        let lua_ref = unsafe { (LUA_SHARED.lual_ref)(*self, LUA_REGISTRYINDEX) };
+        LuaReference::new(lua_ref)
     }
 
     #[inline(always)]
-    pub fn dereference(&self, r#ref: LuaReference) {
+    pub(crate) fn dereference(&self, r#ref: i32) {
         if r#ref == LUA_REFNIL || r#ref == LUA_NOREF {
             return;
         }
         unsafe { (LUA_SHARED.lual_unref)(*self, LUA_REGISTRYINDEX, r#ref) }
     }
 
+    /// If it's a LUA_REFNIL or LUA_NOREF, it returns false and leaves the stack unchanged
+    /// Otherwise, it pushes the reference to the stack and returns true
     #[inline(always)]
-    pub fn from_reference(&self, r#ref: LuaReference) -> bool {
+    pub fn from_reference<R: AsRef<LuaReference>>(&self, r#ref: R) -> bool {
+        let r#ref = r#ref.as_ref().raw();
         if r#ref == LUA_REFNIL || r#ref == LUA_NOREF {
             return false;
         }
-        unsafe { self.raw_geti(LUA_REGISTRYINDEX, r#ref) };
+        self.raw_geti(LUA_REGISTRYINDEX, r#ref);
         true
     }
 
@@ -177,7 +167,7 @@ impl LuaState {
 
     #[inline(always)]
     pub fn is_none_or_nil(&self, index: i32) -> bool {
-        unsafe { self.is_nil(index) || self.is_none(index) }
+        self.is_nil(index) || self.is_none(index)
     }
 
     #[inline(always)]
@@ -229,8 +219,40 @@ impl LuaState {
     }
 
     #[inline(always)]
-    pub fn get_field(&self, index: i32, k: LuaCStr) {
+    pub fn push_to_lua<T: PushToLua>(&self, value: T) {
+        value.push_to_lua(self);
+    }
+
+    #[inline(always)]
+    pub fn raw_get_field(&self, index: i32, k: LuaCStr) {
         unsafe { (LUA_SHARED.lua_getfield)(*self, index, k.as_ptr()) };
+    }
+
+    pub fn get_field(&self, index: i32, key: LuaCStr) {
+        static mut PROT_KEY: LuaCStr = c"NULL";
+        unsafe extern "C-unwind" fn protected_helper(l: State) -> i32 {
+            l.raw_get_field(1, PROT_KEY);
+            1
+        }
+
+        if self.get_meta_field(index, c"__index") == 0 {
+            self.raw_get_field(index, key);
+            return;
+        }
+
+        unsafe {
+            // SAFETY: We are only accessing static data here
+            PROT_KEY = cast_cstr_to_static(key);
+        }
+
+        self.pop(); // pop the metamethod
+        self.push_value(index); // push the table, to not pop it when calling the protected function
+        self.push_function(protected_helper);
+        self.insert(-2); // insert the protected function
+        if !self.raw_pcall_ignore(1, 1) {
+            // push nil if an error occurred, mimicking the behavior of lua_getfield
+            self.push_nil();
+        }
     }
 
     #[inline(always)]
@@ -246,13 +268,13 @@ impl LuaState {
     #[inline(always)]
     pub fn push_number<N>(&self, num: N)
     where
-        N: LuaPushNumber,
+        N: LuaNumeric,
     {
-        num.lua_push_number(*self);
+        num.push_to_lua(self);
     }
 
     #[inline(always)]
-    pub fn lua_push_number(&self, num: LuaNumber) {
+    pub fn raw_push_number(&self, num: LuaNumber) {
         unsafe { (LUA_SHARED.lua_pushnumber)(*self, num) }
     }
 
@@ -272,7 +294,7 @@ impl LuaState {
     }
 
     #[inline(always)]
-    pub fn pcall(&self, nargs: i32, nresults: i32, errfunc: i32) -> Result<(), LuaError> {
+    pub fn raw_pcall(&self, nargs: i32, nresults: i32, errfunc: i32) -> Result<(), LuaError> {
         let lua_error_code = unsafe { (LUA_SHARED.lua_pcall)(*self, nargs, nresults, errfunc) };
         if lua_error_code == 0 {
             Ok(())
@@ -281,11 +303,65 @@ impl LuaState {
         }
     }
 
+    #[inline(always)]
+    pub fn raw_pcall_ignore(&self, nargs: i32, nresults: i32) -> bool {
+        if let Err(err) = self.raw_pcall(nargs, nresults, 0) {
+            self.error_no_halt(&err.to_string(), None);
+            return false;
+        }
+        true
+    }
+
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// #[lua_function]
+    /// fn foo(l: gmod::lua::State) -> anyhow::Result<()> {
+    ///     l.pcall(|| {
+    ///         l.push_string("hello");
+    ///         1
+    ///     });
+    ///     Ok(())
+    /// }
+    /// ```
+    #[inline(always)]
+    pub fn pcall<'a, F>(&self, callback: F) -> Result<(), LuaError>
+    where
+        F: FnOnce() -> i32 + 'a,
+    {
+        if !self.is_function(-1) {
+            self.pop(); // pop whatever value
+            return Err(LuaError::InvalidFunction);
+        }
+        let top = self.get_top();
+        let nresults = callback();
+        let n_args = self.get_top() - top;
+        self.raw_pcall(n_args, nresults, 0)
+    }
+
     /// Same as pcall, but ignores any runtime error and calls `ErrorNoHaltWithStack` instead with the error message.
     ///
     /// Returns whether the execution was successful.
-    pub fn pcall_ignore(&self, nargs: i32, nresults: i32) -> bool {
-        if let Err(err) = self.pcall(nargs, nresults, 0) {
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// #[lua_function]
+    /// fn foo(l: gmod::lua::State) -> anyhow::Result<()> {
+    ///     l.pcall_ignore(|| {
+    ///         l.push_string("hello");
+    ///         1
+    ///     });
+    ///     Ok(())
+    /// }
+    /// ```
+    #[inline(always)]
+    pub fn pcall_ignore<'a, F>(&self, callback: F) -> bool
+    where
+        F: FnOnce() -> i32 + 'a,
+    {
+        if let Err(err) = self.pcall(callback) {
             self.error_no_halt(&err.to_string(), None);
             return false;
         }
@@ -293,58 +369,58 @@ impl LuaState {
     }
 
     /// Check if reference is valid, if it's then check if it's a function and call it.
-    /// You push the arguments before calling this function.
-    /// This function returns a tuple of whether the function was valid and whether the call was successful.
-    pub fn pcall_ignore_function_ref(
-        &self,
-        func_ref: i32,
-        nargs: i32,
-        nresults: i32,
-    ) -> (bool, bool) {
+    ///
+    /// You push the arguments inside the callback and return the number of results expected from the call.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// #[lua_function]
+    /// fn foo(l: gmod::lua::State) -> anyhow::Result<()> {
+    ///     let func_ref = l.check_function(1)?;
+    ///     l.pcall_func_ref(func_ref, || {
+    ///         l.push_string("hello");
+    ///         1
+    ///     });
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn pcall_func_ref<'a, R, F>(&self, func_ref: R, callback: F) -> Result<(), LuaError>
+    where
+        F: FnOnce() -> i32 + 'a,
+        R: AsRef<LuaReference>,
+    {
         if !self.from_reference(func_ref) {
-            self.pop_n(nargs);
-            return (false, false);
+            return Err(LuaError::InvalidFunction);
         }
-
-        if !self.is_function(-1) {
-            self.pop_n(nargs + 1 /*pop the value pushed by from_reference*/);
-            return (false, false);
-        }
-
-        // insert the function before the arguments
-        if nargs > 0 {
-            self.insert(-(nargs + 1));
-        }
-
-        (true, self.pcall_ignore(nargs, nresults))
+        self.pcall(callback)
     }
 
-    /// Check if a function is valid, if it is then call it.
-    /// You push the function then the arguments before calling this function.
-    /// This function returns true if the function was valid, doesn't care if call was successful or not
-    pub fn pcall_if_valid_function(&self, nargs: i32, nresults: i32) -> bool {
-        if nargs == 0 {
-            if !self.is_function(-1) {
-                self.pop(); // pop the function
-                return false;
-            }
-        } else if !self.is_function(-nargs - 1) {
-            self.pop_n(nargs + 1 /*pop the function*/);
-            return false;
-        }
-
-        self.pcall_ignore(nargs, nresults);
-        true
-    }
-
-    pub fn is_valid_function_ref(&self, func_ref: i32) -> bool {
+    /// Same as pcall_func_ref, but ignores any runtime error and calls `ErrorNoHaltWithStack` instead with the error message.
+    ///
+    /// You push the arguments inside the callback and return the number of results expected from the call.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// #[lua_function]
+    /// fn foo(l: gmod::lua::State) -> anyhow::Result<()> {
+    ///     let func_ref = l.check_function(1)?;
+    ///     l.pcall_func_ref_ignore(func_ref, || {
+    ///         l.push_string("hello");
+    ///     });
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn pcall_ignore_func_ref<'a, R, F>(&self, func_ref: R, callback: F) -> bool
+    where
+        F: FnOnce() -> i32 + 'a,
+        R: AsRef<LuaReference>,
+    {
         if !self.from_reference(func_ref) {
             return false;
         }
-
-        let is_function = self.is_function(-1);
-        self.pop(); // pop the function
-        is_function
+        self.pcall_ignore(callback)
     }
 
     #[inline(always)]
@@ -358,12 +434,7 @@ impl LuaState {
     }
 
     #[inline(always)]
-    pub fn cpcall_ignore(
-        &self,
-        func: LuaFunction,
-        ud: *mut c_void,
-        traceback: Option<&str>,
-    ) -> bool {
+    pub fn cpcall_ignore(&self, func: LuaFunction, ud: *mut c_void) -> bool {
         if let Err(err) = self.cpcall(func, ud) {
             self.error_no_halt(&err.to_string(), None);
             return false;
@@ -372,8 +443,8 @@ impl LuaState {
         true
     }
 
-    pub unsafe fn load_string(&self, src: LuaCStr) -> Result<(), LuaError> {
-        let lua_error_code = (LUA_SHARED.lual_loadstring)(*self, src.as_ptr());
+    pub fn load_string(&self, src: LuaCStr) -> Result<(), LuaError> {
+        let lua_error_code = unsafe { (LUA_SHARED.lual_loadstring)(*self, src.as_ptr()) };
         if lua_error_code == 0 {
             Ok(())
         } else {
@@ -399,11 +470,9 @@ impl LuaState {
         unsafe { (LUA_SHARED.lual_traceback)(*self, state1, std::ptr::null(), level) }
     }
 
-    pub fn get_traceback(&self, state1: State, level: i32) -> Cow<'_, str> {
+    pub fn get_traceback(&self, state1: State, level: i32) -> String {
         self.lual_traceback(state1, level);
-        let traceback = self
-            .get_string(-1)
-            .unwrap_or(Cow::Borrowed("Unknown error")); // this shouldn't happen but just in case
+        let traceback = self.get_string(-1).unwrap_or(String::from("Unknown error")); // this shouldn't happen but just in case
         self.pop();
         traceback
     }
@@ -447,8 +516,8 @@ impl LuaState {
     }
 
     #[inline(always)]
-    pub unsafe fn replace(&self, index: i32) {
-        (LUA_SHARED.lua_replace)(*self, index)
+    pub fn replace(&self, index: i32) {
+        unsafe { (LUA_SHARED.lua_replace)(*self, index) }
     }
 
     #[inline(always)]
@@ -516,7 +585,7 @@ impl LuaState {
     /// lua.push_string("Hello, world!");
     /// lua.push_closure(foo, 1);
     /// ```
-    pub unsafe fn push_closure_arg(&self, n: i32) {
+    pub fn push_closure_arg(&self, n: i32) {
         self.push_value(self.upvalue_index(n));
     }
 
@@ -526,14 +595,41 @@ impl LuaState {
         LUA_GLOBALSINDEX - idx
     }
 
+    /// TODO: apply the trick from set_field to make this protected from crashing
     #[inline(always)]
-    pub fn set_table(&self, index: i32) {
+    pub fn raw_set_table(&self, index: i32) {
         unsafe { (LUA_SHARED.lua_settable)(*self, index) }
     }
 
     #[inline(always)]
-    pub fn set_field(&self, index: i32, k: LuaCStr) {
+    pub fn raw_set_field(&self, index: i32, k: LuaCStr) {
         unsafe { (LUA_SHARED.lua_setfield)(*self, index, k.as_ptr()) }
+    }
+
+    #[inline(always)]
+    pub fn set_field(&self, index: i32, key: LuaCStr) {
+        static mut PROT_KEY: LuaCStr = c"NULL";
+        unsafe extern "C-unwind" fn protected_helper(l: State) -> i32 {
+            l.raw_set_field(1, PROT_KEY); // 1 will be the table
+            0
+        }
+
+        if self.get_meta_field(index, c"__newindex") == 0 {
+            self.raw_set_field(index, key);
+            return;
+        }
+
+        unsafe {
+            // SAFETY: We are only accessing static data here
+            PROT_KEY = cast_cstr_to_static(key);
+        }
+
+        self.pop(); // pop the metamethod
+        self.push_value(index); // push the table, to not pop it when calling the protected function
+        self.insert(-2); // move the table before the value that is on top of the stack
+        self.push_function(protected_helper);
+        self.insert(-3); // insert the protected function before the table
+        self.raw_pcall_ignore(2, 0);
     }
 
     #[inline(always)]
@@ -575,19 +671,20 @@ impl LuaState {
         unsafe { (LUA_SHARED.lua_createtable)(*self, 0, 0) }
     }
 
+    /// TODO: apply the trick from get_field to make this protected from crashing
     #[inline(always)]
-    pub fn get_table(&self, index: i32) {
+    pub fn raw_get_table(&self, index: i32) {
         unsafe { (LUA_SHARED.lua_gettable)(*self, index) }
     }
 
-    pub unsafe fn check_binary_string(&self, arg: i32) -> Result<&[u8]> {
+    pub unsafe fn check_binary_string(&self, arg: i32) -> Result<Vec<u8>> {
         match self.get_binary_string(arg) {
             Some(s) => Ok(s),
             None => bail!(self.tag_error(arg, LUA_TSTRING)),
         }
     }
 
-    pub fn check_string(&self, arg: i32) -> Result<Cow<'_, str>> {
+    pub fn check_string(&self, arg: i32) -> Result<String> {
         match self.get_string(arg) {
             Some(s) => Ok(s),
             None => bail!(self.tag_error(arg, LUA_TSTRING)),
@@ -640,9 +737,10 @@ impl LuaState {
     }
 
     #[inline(always)]
-    pub fn check_function(&self, arg: i32) -> Result<()> {
+    pub fn check_function(&self, arg: i32) -> Result<LuaReference> {
         if self.is_function(arg) {
-            Ok(())
+            self.push_value(arg);
+            Ok(self.reference())
         } else {
             bail!(self.tag_error(arg, LUA_TFUNCTION))
         }
@@ -677,8 +775,8 @@ impl LuaState {
     }
 
     #[inline(always)]
-    pub unsafe fn set_metatable(&self, index: i32) -> i32 {
-        (LUA_SHARED.lua_setmetatable)(*self, index)
+    pub fn set_metatable(&self, index: i32) -> i32 {
+        unsafe { (LUA_SHARED.lua_setmetatable)(*self, index) }
     }
 
     #[inline(always)]
@@ -740,17 +838,11 @@ impl LuaState {
     #[inline(always)]
     /// See `call`
     pub fn coroutine_resume_call(&self, narg: i32) {
-        unsafe {
-            match self.coroutine_resume(narg) {
-                LUA_OK => {}
-                LUA_ERRRUN => self.error(
-                    self.get_string(-2)
-                        .unwrap_or(Cow::Borrowed("Unknown error"))
-                        .as_ref(),
-                ),
-                LUA_ERRMEM => self.error("Out of memory"),
-                _ => self.error("Unknown internal Lua error"),
-            }
+        match self.coroutine_resume(narg) {
+            LUA_OK => {}
+            LUA_ERRRUN => self.error(self.get_string(-2).unwrap_or(String::from("Unknown error"))),
+            LUA_ERRMEM => self.error("Out of memory"),
+            _ => self.error("Unknown internal Lua error"),
         }
     }
 
@@ -777,33 +869,27 @@ impl LuaState {
         unsafe { (LUA_SHARED.lua_equal)(*self, index1, index2) == 1 }
     }
 
+    #[inline(always)]
+    pub fn setfenv(&self, index: i32) -> i32 {
+        unsafe { (LUA_SHARED.lua_setfenv)(*self, index) }
+    }
+
+    #[inline(always)]
+    pub fn getfenv(&self, index: i32) {
+        unsafe { (LUA_SHARED.lua_getfenv)(*self, index) }
+    }
+
+    #[inline]
+    pub fn get_meta_field(&self, index: i32, k: LuaCStr) -> i32 {
+        unsafe { (LUA_SHARED.lual_getmetafield)(*self, index, k.as_ptr()) }
+    }
+
     /// Creates a new table in the registry with the given `name` as the key if it doesn't already exist, and pushes it onto the stack.
     ///
     /// Returns if the metatable was already present in the registry.
     #[inline(always)]
     pub fn new_metatable(&self, name: LuaCStr) -> bool {
         unsafe { (LUA_SHARED.lual_newmetatable)(*self, name.as_ptr()) == 0 }
-    }
-
-    pub fn new_userdata<T: Sized>(&self, data: T, metatable: Option<LuaCStr>) -> *mut T {
-        unsafe {
-            let ptr = (LUA_SHARED.lua_newuserdata)(*self, std::mem::size_of::<T>()) as *mut T;
-
-            debug_assert_eq!(
-                ptr as usize % std::mem::align_of::<T>(),
-                0,
-                "Lua userdata is unaligned!"
-            );
-
-            if let Some(metatable) = metatable {
-                self.get_metatable_name(metatable);
-                self.set_metatable(-2);
-            }
-
-            ptr.write(data);
-
-            ptr
-        }
     }
 
     // lua functions shouldn't be able to call it directly and should instead return Result types, as destructors may not be called
@@ -896,7 +982,7 @@ impl LuaState {
                 self.push_value(index);
                 let str = self.get_string(-1);
                 self.pop();
-                format!("{:?}", str.unwrap().into_owned())
+                format!("{:?}", str.unwrap())
             }
             "boolean" => {
                 self.push_value(index);
@@ -952,7 +1038,7 @@ impl LuaState {
         let mut fname = "?";
         let mut namewhat: Option<&str> = None;
 
-        if let Some(mut ar) = self.debug_getinfo_at(0, c"n") {
+        if let Some(ar) = self.debug_getinfo_at(0, c"n") {
             if !ar.name.is_null() {
                 fname = rstr!(ar.name);
             }
@@ -994,7 +1080,7 @@ impl LuaState {
             eprintln!("{error_prefix}{err}");
         } else {
             self.push_string(&err);
-            if self.pcall(1, 0, 0).is_err() {
+            if self.raw_pcall(1, 0, 0).is_err() {
                 eprintln!("{error_prefix}{err}");
             }
         }

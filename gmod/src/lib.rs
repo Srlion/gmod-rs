@@ -14,16 +14,13 @@ pub use libloading;
 
 /// Lua interface
 pub mod lua;
-pub use lua::task_queue::wait_lua_tick;
+pub use lua::global_task_queue::wait_lua_tick;
 pub use lua::*;
 
-/// Userdata types
-pub mod userdata;
-
-/// Net library helpers
-pub mod net;
-
 pub use ::defer::defer;
+
+pub use linkme;
+pub use paste;
 
 /// Returns whether this client is running the x86-64 branch
 pub fn is_x86_64() -> bool {

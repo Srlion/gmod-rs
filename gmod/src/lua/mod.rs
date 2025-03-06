@@ -1,8 +1,7 @@
-#![allow(unused)]
-use std::cell::Cell;
+#![allow(static_mut_refs)]
 #[allow(unused)]
 use std::cell::UnsafeCell;
-use std::mem::MaybeUninit;
+use std::sync::atomic::AtomicBool;
 
 use anyhow::Result;
 
@@ -17,8 +16,17 @@ mod returns;
 pub use returns::HandleLuaFunctionReturn;
 
 mod number;
+pub mod push_to_lua;
+mod value;
+pub use value::Value;
 
+pub mod global_task_queue;
 pub mod task_queue;
+
+pub mod rstruct;
+
+pub mod reference;
+pub use reference::LuaReference;
 
 mod raw_bind;
 
@@ -51,6 +59,9 @@ pub enum LuaError {
     /// `LUA_ERRERR`
     ErrorHandlerError,
 
+    /// Tried to call a non-function value
+    InvalidFunction,
+
     /// Unknown Lua error code
     Unknown(i32),
 }
@@ -66,6 +77,7 @@ impl std::fmt::Display for LuaError {
             LuaError::RuntimeError(Some(s)) => write!(f, "{}", s),
             LuaError::RuntimeError(None) => write!(f, "Runtime error"),
             LuaError::ErrorHandlerError => write!(f, "Error handler error"),
+            LuaError::InvalidFunction => write!(f, "Tried to call a non-function value"),
             LuaError::Unknown(i) => write!(f, "Unknown Lua error code: {}", i),
         }
     }
@@ -152,13 +164,37 @@ pub struct LuaDebug {
     pub i_ci: i32,
 }
 
-#[inline(always)]
-/// Loads lua_shared and imports all functions. This is already done for you if you add `#[gmod::gmod13_open]` to your `gmod13_open` function.
-pub unsafe fn load() {
-    import::LUA_SHARED.load()
+static mut GMOD_CLOSED: AtomicBool = AtomicBool::new(false);
+
+pub fn is_open() -> bool {
+    !is_closed()
+}
+
+pub fn is_closed() -> bool {
+    unsafe { GMOD_CLOSED.load(std::sync::atomic::Ordering::Acquire) }
+}
+
+pub fn set_closed() {
+    unsafe { GMOD_CLOSED.store(true, std::sync::atomic::Ordering::Release) };
 }
 
 #[inline(always)]
-pub unsafe fn unload() {
+/// Loads lua_shared and imports all functions. This is already done for you if you add `#[gmod::gmod13_open]` to your `gmod13_open` function.
+pub unsafe fn load(l: State) {
+    import::LUA_SHARED.load();
+    rstruct::load(l);
+    global_task_queue::load(l);
+    GMOD_CLOSED.store(false, std::sync::atomic::Ordering::Release);
+}
+
+pub unsafe fn post_load(l: State) {
+    rstruct::post_load(l);
+}
+
+#[inline(always)]
+pub unsafe fn unload(l: State) {
+    // set_closed is called in the #[gmod13_close] macro, because unload is deferred
+    global_task_queue::unload(l);
+    rstruct::unload(l);
     import::LUA_SHARED.unload()
 }

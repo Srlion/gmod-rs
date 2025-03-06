@@ -1,142 +1,189 @@
-use std::borrow::Borrow;
-use std::iter::repeat_with;
-use std::{
-    borrow::Cow,
-    ffi::c_void,
-    mem::MaybeUninit,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
-};
-
-use gmod_macros::lua_function;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::mpsc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{ffi::c_void, sync::atomic::Ordering};
 
 use super::State;
-use crate as gmod;
 
 type CallbackBoxed = Box<dyn FnOnce(State) + Send>;
 
-#[repr(C)]
-struct CallbackCtx<'a> {
-    callback: CallbackBoxed,
-    traceback: Cow<'a, str>,
+struct LuaReceiver {
+    rx: mpsc::Receiver<CallbackBoxed>,
+    timer_name: String,
+    counter_ptr: usize,   // pointer of the counter AtomicUsize
+    is_closed_ptr: usize, // pointer of the is_closed AtomicBool
 }
 
-pub struct TaskQueue {
-    sender: flume::Sender<CallbackCtx<'static>>,
-    receiver: flume::Receiver<CallbackCtx<'static>>,
-}
+impl LuaReceiver {
+    fn get_counter(&self) -> &AtomicUsize {
+        unsafe { &mut *(self.counter_ptr as *mut AtomicUsize) }
+    }
 
-impl Default for TaskQueue {
-    fn default() -> Self {
-        let (tx, rx) = flume::unbounded();
-        Self {
-            sender: tx,
-            receiver: rx,
+    fn increment_counter(&self) {
+        self.get_counter().fetch_add(1, Ordering::Release);
+    }
+
+    fn count(&self) -> usize {
+        self.get_counter().load(Ordering::Acquire)
+    }
+
+    fn get_is_closed(&self) -> &AtomicBool {
+        unsafe { &*(self.is_closed_ptr as *const AtomicBool) }
+    }
+
+    fn set_closed(&self) {
+        self.get_is_closed().store(true, Ordering::Release);
+    }
+
+    fn is_closed(&self) -> bool {
+        self.get_is_closed().load(Ordering::Acquire)
+    }
+
+    pub fn poll(&self, l: State) {
+        // we max it to avoid starving the main thread OR lagging it
+        for _ in 0..5 {
+            match self.rx.try_recv() {
+                Ok(callback) => {
+                    self.get_counter().fetch_sub(1, Ordering::Release);
+                    l.set_top(0); // clear the stack
+                    callback(l);
+                }
+                Err(_) => break, // exit if there is no callback
+            }
         }
     }
 }
 
-pub static COUNTER: AtomicUsize = AtomicUsize::new(0);
-pub static mut TASK_QUEUE: MaybeUninit<TaskQueue> = MaybeUninit::uninit();
-static mut GMOD_CLOSED: bool = false;
-
-pub fn read<'a>() -> &'a TaskQueue {
-    unsafe { TASK_QUEUE.assume_init_ref() }
+impl Drop for LuaReceiver {
+    fn drop(&mut self) {
+        let _ = unsafe { Box::from_raw(self.counter_ptr as *mut AtomicUsize) };
+        let _ = unsafe { Box::from_raw(self.is_closed_ptr as *mut AtomicBool) };
+    }
 }
 
-pub fn load(l: State) {
-    unsafe {
-        TASK_QUEUE.write(TaskQueue::default());
+#[derive(Clone)]
+pub struct TaskQueue {
+    sender: mpsc::Sender<CallbackBoxed>,
+    lua_receiver_ptr: usize,
+}
+
+impl TaskQueue {
+    pub fn new(l: State) -> Self {
+        let (tx, rx) = mpsc::channel();
+
+        let counter_ptr = {
+            let counter = Box::new(AtomicUsize::new(0));
+            Box::into_raw(counter) as usize
+        };
+        let is_closed_ptr = {
+            let is_closed = Box::new(AtomicBool::new(false));
+            Box::into_raw(is_closed) as usize
+        };
+
+        let mut task_queue = {
+            Self {
+                sender: tx,
+                lua_receiver_ptr: 0,
+            }
+        };
+
+        let timer_name = {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_nanos();
+            format!(
+                "_GOOBIE_LUA_THINK_{nanos}_{:p}_{:p}",
+                Box::new(nanos),
+                Box::new(&task_queue)
+            )
+        };
+
+        let lua_receiver = Box::new(LuaReceiver {
+            rx,
+            timer_name: timer_name.clone(),
+            counter_ptr,
+            is_closed_ptr,
+        });
+        let lua_receiver_ptr = Box::into_raw(lua_receiver);
+        task_queue.lua_receiver_ptr = lua_receiver_ptr as usize;
+
+        l.get_global(c"timer");
+        {
+            l.get_field(-1, c"Create");
+            l.pcall_ignore(|| {
+                l.push_string(&timer_name);
+                l.push_number(0); // interval
+                l.push_number(0); // repetitions
+
+                l.push_lightuserdata(lua_receiver_ptr as *mut c_void);
+                l.push_closure(task_queue_think, 1);
+
+                0
+            });
+        }
+        l.pop(); // pop the timer table
+
+        task_queue
     }
 
-    let random_str: String = repeat_with(fastrand::alphanumeric).take(10).collect();
-    let timer_name = format!("_GOOBIE_LUA_THINK_{random_str}_{:p}", Box::new(read()));
+    fn lua_receiver(&self) -> &LuaReceiver {
+        // SAFETY: lua receiver should be alive as long as the task queue is alive
+        // also we are accessing it on the main thread, so it should be safe (lua state exists with us wink wink)
+        let lua_receiver_ptr = self.lua_receiver_ptr as *mut LuaReceiver;
+        unsafe { &*lua_receiver_ptr }
+    }
 
+    pub fn add<F>(&self, callback: F)
+    where
+        F: FnOnce(State) + Send + 'static,
+    {
+        if super::is_closed() {
+            return;
+        }
+        let _ = self.sender.send(Box::new(callback));
+        self.lua_receiver().increment_counter();
+    }
+
+    pub fn poll(&self, l: State) {
+        self.lua_receiver().poll(l);
+    }
+}
+
+impl Drop for TaskQueue {
+    fn drop(&mut self) {
+        self.lua_receiver().set_closed();
+    }
+}
+
+fn remove_timer(l: State, timer_name: &str) {
     l.get_global(c"timer");
     {
-        l.get_field(-1, c"Create");
-        {
-            l.push_string(&timer_name);
-            l.push_number(0);
-            l.push_number(0);
-            l.push_function(task_queue_think);
+        l.get_field(-1, c"Remove");
+        l.pcall_ignore(|| {
+            l.push_string(timer_name);
+            0
+        });
+    }
+    l.pop(); // pop the timer table
+}
+
+unsafe extern "C-unwind" fn task_queue_think(l: State) -> i32 {
+    l.push_closure_arg(1); // 1 = lua think receiver
+    let lua_receiver_ptr = l.to_userdata(-1) as *mut LuaReceiver;
+    let lua_receiver = &*lua_receiver_ptr;
+
+    if lua_receiver.count() == 0 {
+        // if no more tasks and the task queue is closed, we need to remove the timer and drop the receiver
+        if lua_receiver.is_closed() {
+            remove_timer(l, &lua_receiver.timer_name);
+            let _ = Box::from_raw(lua_receiver_ptr); // consume the receiver to drop it to avoid memory leak
         }
-        l.pcall_ignore(4, 0);
-    }
-    l.pop();
 
-    unsafe {
-        GMOD_CLOSED = false;
-    }
-}
-
-pub fn unload(l: State) {
-    unsafe { GMOD_CLOSED = true };
-    unsafe { TASK_QUEUE.assume_init_read() };
-}
-
-pub fn wait_lua_tick<F>(traceback: String, callback: F)
-where
-    F: FnOnce(State) + Send + 'static,
-{
-    if unsafe { GMOD_CLOSED } {
-        return;
+        return 0;
     }
 
-    read().sender.send(CallbackCtx {
-        callback: Box::new(callback),
-        traceback: Cow::Owned(traceback),
-    });
-    COUNTER.fetch_add(1, Ordering::Release);
-}
+    lua_receiver.poll(l);
 
-pub fn run_callbacks(l: State) {
-    if unsafe { GMOD_CLOSED } {
-        return;
-    }
-
-    if is_empty() {
-        return;
-    }
-
-    let task_queue = read();
-    while let Ok(callback_ctx) = task_queue.receiver.try_recv() {
-        COUNTER.fetch_sub(1, Ordering::Release);
-        process_callback(l, callback_ctx);
-    }
-}
-
-pub fn len() -> usize {
-    COUNTER.load(Ordering::Acquire)
-}
-
-pub fn is_empty() -> bool {
-    len() == 0
-}
-
-fn process_callback(l: State, mut callback_ctx: CallbackCtx) {
-    let traceback = std::mem::replace(&mut callback_ctx.traceback, Cow::Borrowed(""));
-
-    let callback_ctx_ptr: *mut c_void = Box::into_raw(Box::new(callback_ctx)) as *mut c_void;
-    l.cpcall_ignore(handle_task_queue, callback_ctx_ptr, Some(&traceback));
-}
-
-extern "C-unwind" fn handle_task_queue(l: State) -> i32 {
-    let callback_ctx_ptr = l.to_userdata(1);
-    let callback_ctx = unsafe { Box::from_raw(callback_ctx_ptr as *mut CallbackCtx) };
-
-    let traceback = callback_ctx.traceback;
-    let callback = callback_ctx.callback;
-
-    callback(l);
-    // Box::from_raw will automatically drop the callback
-
-    0
-}
-
-extern "C-unwind" fn task_queue_think(l: State) -> i32 {
-    run_callbacks(l);
     0
 }

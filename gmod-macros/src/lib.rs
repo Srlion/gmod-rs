@@ -119,10 +119,9 @@ pub fn gmod13_open(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
         input.block = syn::parse2(quote! {{
             #[allow(unused_unsafe)]
             unsafe {
-                ::gmod::lua::load()
+                ::gmod::lua::load(#lua_ident)
             }
-
-            ::gmod::lua::task_queue::load(#lua_ident);
+            ::gmod::defer!(unsafe { ::gmod::lua::post_load(#lua_ident) });
 
             #block
         }})
@@ -150,8 +149,8 @@ pub fn gmod13_close(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
 
         let block = input.block;
         input.block = syn::parse2(quote! {{
-            ::gmod::defer!(unsafe { ::gmod::lua::unload() });
-            ::gmod::defer!(::gmod::lua::task_queue::unload(#lua_ident)); // we should be the last thing to run
+            ::gmod::lua::set_closed();
+            ::gmod::defer!(unsafe { ::gmod::lua::unload(#lua_ident) });
 
             #block
         }})

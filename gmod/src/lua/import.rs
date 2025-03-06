@@ -1,18 +1,17 @@
+#![allow(static_mut_refs)]
+
 use core::panic;
-#[cfg(debug_assertions)]
-use std::sync::atomic::AtomicI64;
 
 use std::{cell::UnsafeCell, ffi::c_void, mem::MaybeUninit, thread};
 
 use libloading::{Library, Symbol};
 
-use super::{LuaDebug, LuaError, State as LuaState};
+use super::{reference::LuaReference, LuaDebug, LuaError, State as LuaState};
 
 pub type LuaSize = usize;
 pub type LuaString = *const std::os::raw::c_char;
 pub type LuaFunction = unsafe extern "C-unwind" fn(state: LuaState) -> i32;
 pub type LuaNumber = f64;
-pub type LuaReference = i32;
 
 pub const LUA_REGISTRYINDEX: i32 = -10000;
 pub const LUA_ENVIRONINDEX: i32 = -10001;
@@ -23,8 +22,8 @@ pub fn lua_upvalueindex(i: u8) -> i32 {
 }
 
 pub const LUA_MULTRET: i32 = -1;
-pub const LUA_NOREF: LuaReference = -2;
-pub const LUA_REFNIL: LuaReference = -1;
+pub const LUA_NOREF: LuaReference = LuaReference::new_static(-2);
+pub const LUA_REFNIL: LuaReference = LuaReference::new_static(-1);
 
 pub const LUA_TNONE: i32 = -1;
 pub const LUA_TNIL: i32 = 0;
@@ -54,17 +53,13 @@ pub struct LuaReg {
 }
 
 impl LuaError {
-    fn get_error_message(lua_state: LuaState) -> Option<String> {
-        unsafe { lua_state.get_string(-1).map(|str| str.into_owned()) }
-    }
-
     pub(crate) fn from_lua_state(lua_state: LuaState, lua_int_error_code: i32) -> Self {
         use super::LuaError::*;
-        match lua_int_error_code {
+        let res = match lua_int_error_code {
             LUA_ERRMEM => MemoryAllocationError,
             LUA_ERRERR => ErrorHandlerError,
             LUA_ERRSYNTAX | LUA_ERRRUN | LUA_ERRFILE => {
-                let msg = LuaError::get_error_message(lua_state);
+                let msg = lua_state.get_string(-1);
                 match lua_int_error_code {
                     LUA_ERRSYNTAX => SyntaxError(msg),
                     LUA_ERRRUN => RuntimeError(msg),
@@ -73,7 +68,9 @@ impl LuaError {
                 }
             }
             _ => Unknown(lua_int_error_code),
-        }
+        };
+        lua_state.pop(); // pop the error message
+        res
     }
 }
 
@@ -111,17 +108,13 @@ impl LuaSharedInterface {
             return;
         }
         LuaShared::unload();
-        Box::from_raw(*self.0.get());
+        let _ = Box::from_raw(*self.0.get());
         *self.0.get() = std::ptr::null_mut();
         #[cfg(debug_assertions)]
         {
-            Box::from_raw(*self.1.get());
+            let _ = Box::from_raw(*self.1.get());
             *self.1.get() = std::ptr::null_mut();
         }
-    }
-
-    pub(super) unsafe fn set(&self, ptr: *mut c_void) {
-        *self.0.get() = ptr as *mut LuaShared;
     }
 }
 impl std::ops::Deref for LuaSharedInterface {
@@ -301,6 +294,13 @@ pub struct LuaShared {
         'static,
         unsafe extern "C-unwind" fn(state: LuaState, index1: i32, index2: i32) -> i32,
     >,
+    pub lua_setfenv:
+        Symbol<'static, unsafe extern "C-unwind" fn(state: LuaState, index: i32) -> i32>,
+    pub lua_getfenv: Symbol<'static, unsafe extern "C-unwind" fn(state: LuaState, index: i32)>,
+    pub lual_getmetafield: Symbol<
+        'static,
+        unsafe extern "C-unwind" fn(state: LuaState, obj: i32, e: LuaString) -> i32,
+    >,
 }
 
 unsafe impl Sync for LuaShared {}
@@ -309,17 +309,15 @@ static mut LIBLOADING_LIBRARY: MaybeUninit<Library> = MaybeUninit::uninit();
 impl LuaShared {
     fn unload() {
         unsafe {
-            LIBLOADING_LIBRARY.assume_init_read(); // Drop the library
+            LIBLOADING_LIBRARY.assume_init_drop(); // Drop the library
         }
     }
 
     fn import() -> Self {
         unsafe {
             let library = {
-                let (library, path) = Self::find_lua_shared();
-                unsafe {
-                    LIBLOADING_LIBRARY.write(library);
-                }
+                let (library, _) = Self::find_lua_shared();
+                LIBLOADING_LIBRARY.write(library);
                 LIBLOADING_LIBRARY.assume_init_ref()
             };
 
@@ -390,6 +388,9 @@ impl LuaShared {
                 lua_status: find_symbol!("lua_status"),
                 lua_xmove: find_symbol!("lua_xmove"),
                 lua_equal: find_symbol!("lua_equal"),
+                lua_setfenv: find_symbol!("lua_setfenv"),
+                lua_getfenv: find_symbol!("lua_getfenv"),
+                lual_getmetafield: find_symbol!("luaL_getmetafield"),
                 library,
             }
         }

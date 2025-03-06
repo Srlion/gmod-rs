@@ -1,105 +1,18 @@
-use super::{LuaNumber, State, LUA_NUMBER_MAX_SAFE_INTEGER};
+use super::push_to_lua::PushToLua;
 
-pub trait LuaPushNumber {
-    fn lua_push_number(self, l: State);
-}
+pub trait LuaNumeric: PushToLua {}
 
-impl LuaPushNumber for i8 {
-    fn lua_push_number(self, l: State) {
-        l.lua_push_number(self as LuaNumber);
-    }
-}
-
-impl LuaPushNumber for i16 {
-    fn lua_push_number(self, l: State) {
-        l.lua_push_number(self as LuaNumber);
-    }
-}
-
-impl LuaPushNumber for i32 {
-    fn lua_push_number(self, l: State) {
-        l.lua_push_number(self as LuaNumber);
-    }
-}
-
-impl LuaPushNumber for i64 {
-    fn lua_push_number(self, l: State) {
-        if self.abs() <= LUA_NUMBER_MAX_SAFE_INTEGER {
-            l.lua_push_number(self as LuaNumber);
-        } else {
-            l.push_string(&self.to_string());
-        }
-    }
-}
-
-impl LuaPushNumber for i128 {
-    fn lua_push_number(self, l: State) {
-        l.push_string(&self.to_string());
-    }
-}
-
-impl LuaPushNumber for isize {
-    fn lua_push_number(self, l: State) {
-        if self.abs() <= LUA_NUMBER_MAX_SAFE_INTEGER as isize {
-            l.lua_push_number(self as LuaNumber);
-        } else {
-            l.push_string(&self.to_string());
-        }
-    }
-}
-
-impl LuaPushNumber for u8 {
-    fn lua_push_number(self, l: State) {
-        l.lua_push_number(self as LuaNumber);
-    }
-}
-
-impl LuaPushNumber for u16 {
-    fn lua_push_number(self, l: State) {
-        l.lua_push_number(self as LuaNumber);
-    }
-}
-
-impl LuaPushNumber for u32 {
-    fn lua_push_number(self, l: State) {
-        l.lua_push_number(self as LuaNumber);
-    }
-}
-
-impl LuaPushNumber for u64 {
-    fn lua_push_number(self, l: State) {
-        if self <= LUA_NUMBER_MAX_SAFE_INTEGER as u64 {
-            l.lua_push_number(self as LuaNumber);
-        } else {
-            l.push_string(&self.to_string());
-        }
-    }
-}
-
-impl LuaPushNumber for u128 {
-    fn lua_push_number(self, l: State) {
-        l.push_string(&self.to_string());
-    }
-}
-
-impl LuaPushNumber for usize {
-    fn lua_push_number(self, l: State) {
-        if self <= LUA_NUMBER_MAX_SAFE_INTEGER as usize {
-            l.lua_push_number(self as LuaNumber);
-        } else {
-            l.push_string(&self.to_string());
-        }
-    }
-}
-
-impl LuaPushNumber for f32 {
-    fn lua_push_number(self, l: State) {
-        l.lua_push_number(self as LuaNumber);
-    }
-}
-
-impl LuaPushNumber for f64 {
-    fn lua_push_number(self, l: State) {
-        l.lua_push_number(self as LuaNumber);
-    }
-}
+impl LuaNumeric for i8 {}
+impl LuaNumeric for i16 {}
+impl LuaNumeric for i32 {}
+impl LuaNumeric for i64 {}
+impl LuaNumeric for i128 {}
+impl LuaNumeric for isize {}
+impl LuaNumeric for u8 {}
+impl LuaNumeric for u16 {}
+impl LuaNumeric for u32 {}
+impl LuaNumeric for u64 {}
+impl LuaNumeric for u128 {}
+impl LuaNumeric for usize {}
+impl LuaNumeric for f32 {}
+impl LuaNumeric for f64 {}
