@@ -26,6 +26,7 @@ pub mod task_queue;
 pub mod rstruct;
 
 pub mod reference;
+mod weak_reference;
 pub use reference::LuaReference;
 
 mod raw_bind;
@@ -182,6 +183,7 @@ pub fn set_closed() {
 /// Loads lua_shared and imports all functions. This is already done for you if you add `#[gmod::gmod13_open]` to your `gmod13_open` function.
 pub unsafe fn load(l: State) {
     import::LUA_SHARED.load();
+    weak_reference::load(l);
     rstruct::load(l);
     global_task_queue::load(l);
     GMOD_CLOSED.store(false, std::sync::atomic::Ordering::Release);
@@ -196,5 +198,6 @@ pub unsafe fn unload(l: State) {
     // set_closed is called in the #[gmod13_close] macro, because unload is deferred
     global_task_queue::unload(l);
     rstruct::unload(l);
+    weak_reference::unload(l);
     import::LUA_SHARED.unload()
 }

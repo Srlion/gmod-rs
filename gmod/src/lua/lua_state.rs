@@ -115,12 +115,14 @@ impl LuaState {
         rstruct::get_struct(*self, idx)
     }
 
-    #[inline(always)]
-    pub fn get_struct_with_ref<T: rstruct::RStruct>(
-        &self,
-        idx: i32,
-    ) -> Result<(&mut T, LuaReference)> {
-        rstruct::get_struct_with_ref(*self, idx)
+    #[inline]
+    pub fn raw_reference(&self) -> i32 {
+        unsafe { (LUA_SHARED.lual_ref)(*self, LUA_REGISTRYINDEX) }
+    }
+
+    #[inline]
+    pub fn raw_getref(&self, r#ref: i32) {
+        self.raw_geti(LUA_REGISTRYINDEX, r#ref)
     }
 
     #[inline(always)]
@@ -152,6 +154,16 @@ impl LuaState {
         }
         self.raw_geti(LUA_REGISTRYINDEX, r#ref);
         true
+    }
+
+    #[inline]
+    pub fn get_weak_ref(&self, r#ref: i32) -> bool {
+        weak_reference::get_weak_ref(*self, r#ref)
+    }
+
+    #[inline]
+    pub fn weak_ref(&self) -> i32 {
+        weak_reference::weak_ref(*self)
     }
 
     #[inline(always)]

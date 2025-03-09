@@ -42,8 +42,8 @@ pub trait RStruct: Sized + 'static {
 }
 
 struct RStructInner {
-    ptr: usize,                         // pointer to the Arc<T>
-    ref_idx: Weak<DynamicLuaReference>, // reference to the userdata, if any
+    ptr: usize, // pointer to the Arc<T>
+                // ref_idx: Weak<DynamicLuaReference>, // reference to the userdata, if any
 }
 
 static mut LUA_STRUCTS: MaybeUninit<HashMap<*mut c_void, RStructInner>> = MaybeUninit::uninit();
@@ -108,7 +108,7 @@ pub(crate) fn push_struct<T: RStruct>(l: State, rstruct: T) {
         ud_ptr,
         RStructInner {
             ptr: Box::into_raw(boxed_struct) as usize,
-            ref_idx: Weak::new(),
+            // ref_idx: Weak::new(),
         },
     );
 }
@@ -129,39 +129,6 @@ pub(crate) fn get_struct<'a, T: RStruct>(l: State, idx: i32) -> Result<&'a mut T
     unsafe {
         let ptr = str_inner.ptr as *mut T;
         Ok(&mut *ptr)
-    }
-}
-
-pub(crate) fn get_struct_with_ref<'a, T: RStruct>(
-    l: State,
-    idx: i32,
-) -> Result<(&'a mut T, LuaReference)> {
-    l.check_table(idx)?;
-    l.raw_geti(idx, INDEX_KEY);
-
-    let ud_ptr = l.to_userdata(-1);
-    let str_inner = match get_map().get_mut(&ud_ptr) {
-        Some(info) => info,
-        None => bail!(
-            "expected a userdata of type: {}",
-            std::any::type_name::<T>()
-        ),
-    };
-
-    // if a weak reference is already present, use that instead of creating a new one
-    let struct_ref = match str_inner.ref_idx.upgrade() {
-        Some(lref) => LuaReference::new_from_arc(lref),
-        None => {
-            l.push_value(-1); // push the userdata again to keep the reference, as l.reference pops from the stack
-            let lref = l.reference();
-            str_inner.ref_idx = lref.weak_ref(); // have a weak reference to be used to avoid creating a lot of references for the same userdata
-            lref
-        }
-    };
-
-    unsafe {
-        let ptr = str_inner.ptr as *mut T;
-        Ok((&mut *ptr, struct_ref))
     }
 }
 
