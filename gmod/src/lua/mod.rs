@@ -31,7 +31,7 @@ pub use reference::LuaReference;
 
 mod raw_bind;
 
-pub const LUA_NUMBER_MAX_SAFE_INTEGER: i64 = (2 ^ 53) - 1;
+pub const LUA_NUMBER_MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
 
 #[derive(Debug, Clone)]
 pub enum LuaError {
