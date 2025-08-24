@@ -7,9 +7,6 @@ license = "MIT"
 description = "Proc macros for gmod-rs"
 repository = "https://github.com/WilliamVenner/gmod-rs"
 
-[features]
-gmcl = []
-
 [lib]
 proc-macro = true
 

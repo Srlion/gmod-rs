@@ -16,7 +16,6 @@ categories = [
 
 [features]
 default = []
-gmcl = ["gmod-macros/gmcl"]
 
 [dependencies]
 anyhow = "1.0.89"
