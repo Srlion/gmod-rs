@@ -886,6 +886,21 @@ impl LuaState {
         unsafe { (LUA_SHARED.lual_getmetafield)(*self, index, k.as_ptr()) }
     }
 
+    #[inline]
+    pub fn get_calling_file_name(&self) -> Option<String> {
+        if let Some(ar) = self.debug_getinfo_at(1, c"S") {
+            unsafe {
+                // SAFETY: short_src is guaranteed to be NUL-terminated by LuaJIT.
+                return Some(
+                    std::ffi::CStr::from_ptr(ar.source)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+        None
+    }
+
     /// Creates a new table in the registry with the given `name` as the key if it doesn't already exist, and pushes it onto the stack.
     ///
     /// Returns if the metatable was already present in the registry.
