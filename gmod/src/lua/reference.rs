@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use crate::wait_lua_tick;
+use crate::next_tick::next_tick;
 
 use super::{LUA_NOREF, LUA_REFNIL};
 
@@ -22,7 +22,7 @@ impl DynamicLuaReference {
 impl Drop for DynamicLuaReference {
     fn drop(&mut self) {
         let raw_val = self.0;
-        wait_lua_tick(move |l| {
+        next_tick(move |l| {
             // dereference the reference from the registry table when we are done with the lua reference
             l.dereference(raw_val);
         });

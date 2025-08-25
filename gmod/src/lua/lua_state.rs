@@ -156,16 +156,6 @@ impl LuaState {
         true
     }
 
-    #[inline]
-    pub fn get_weak_ref(&self, r#ref: i32) -> bool {
-        weak_reference::get_weak_ref(*self, r#ref)
-    }
-
-    #[inline]
-    pub fn weak_ref(&self) -> i32 {
-        weak_reference::weak_ref(*self)
-    }
-
     #[inline(always)]
     /// You may be looking for `is_none_or_nil`
     pub fn is_nil(&self, index: i32) -> bool {

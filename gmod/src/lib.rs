@@ -14,13 +14,21 @@ pub use libloading;
 
 /// Lua interface
 pub mod lua;
-pub use lua::global_task_queue::wait_lua_tick;
 pub use lua::*;
 
 pub use ::defer::defer;
 
 pub use linkme;
 pub use paste;
+
+mod next_tick_queue;
+pub use next_tick_queue::NextTickQueue;
+
+mod next_tick;
+pub use next_tick::{flush_next_tick, next_tick};
+
+#[cfg(feature = "tokio-tasks")]
+pub mod tokio_tasks;
 
 /// Returns whether this client is running the x86-64 branch
 pub fn is_x86_64() -> bool {

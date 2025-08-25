@@ -39,7 +39,7 @@ impl LuaReceiver {
         self.get_is_closed().load(Ordering::Acquire)
     }
 
-    pub fn poll(&self, l: State) {
+    fn flush(&self, l: State) {
         // we max it to avoid starving the main thread OR lagging it
         for _ in 0..5 {
             match self.rx.try_recv() {
@@ -62,12 +62,12 @@ impl Drop for LuaReceiver {
 }
 
 #[derive(Clone)]
-pub struct TaskQueue {
+pub struct NextTickQueue {
     sender: mpsc::Sender<CallbackBoxed>,
     lua_receiver_ptr: usize,
 }
 
-impl TaskQueue {
+impl NextTickQueue {
     pub fn new(l: State) -> Self {
         let (tx, rx) = mpsc::channel();
 
@@ -134,7 +134,7 @@ impl TaskQueue {
         unsafe { &*lua_receiver_ptr }
     }
 
-    pub fn add<F>(&self, callback: F)
+    pub fn queue<F>(&self, callback: F)
     where
         F: FnOnce(State) + Send + 'static,
     {
@@ -145,12 +145,12 @@ impl TaskQueue {
         self.lua_receiver().increment_counter();
     }
 
-    pub fn poll(&self, l: State) {
-        self.lua_receiver().poll(l);
+    pub fn flush(&self, l: State) {
+        self.lua_receiver().flush(l);
     }
 }
 
-impl Drop for TaskQueue {
+impl Drop for NextTickQueue {
     fn drop(&mut self) {
         self.lua_receiver().set_closed();
     }
@@ -183,7 +183,7 @@ unsafe extern "C-unwind" fn task_queue_think(l: State) -> i32 {
         return 0;
     }
 
-    lua_receiver.poll(l);
+    lua_receiver.flush(l);
 
     0
 }

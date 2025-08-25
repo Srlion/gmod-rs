@@ -3,8 +3,6 @@
 use std::cell::UnsafeCell;
 use std::sync::atomic::AtomicBool;
 
-use anyhow::Result;
-
 mod import;
 pub use import::*;
 
@@ -20,16 +18,10 @@ pub mod push_to_lua;
 mod value;
 pub use value::Value;
 
-pub mod global_task_queue;
-pub mod task_queue;
-
 pub mod rstruct;
 
 pub mod reference;
-mod weak_reference;
 pub use reference::LuaReference;
-
-mod raw_bind;
 
 pub const LUA_NUMBER_MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
 
@@ -183,9 +175,12 @@ pub fn set_closed() {
 /// Loads lua_shared and imports all functions. This is already done for you if you add `#[gmod::gmod13_open]` to your `gmod13_open` function.
 pub unsafe fn load(l: State) {
     import::LUA_SHARED.load();
-    weak_reference::load(l);
+
+    #[cfg(feature = "tokio-tasks")]
+    super::tokio_tasks::load(l);
+
     rstruct::load(l);
-    global_task_queue::load(l);
+    super::next_tick::init(l);
     GMOD_CLOSED.store(false, std::sync::atomic::Ordering::Release);
 }
 
@@ -195,9 +190,10 @@ pub unsafe fn post_load(l: State) {
 
 #[inline(always)]
 pub unsafe fn unload(l: State) {
+    #[cfg(feature = "tokio-tasks")]
+    super::tokio_tasks::unload(l);
+
     // set_closed is called in the #[gmod13_close] macro, because unload is deferred
-    global_task_queue::unload(l);
     rstruct::unload(l);
-    weak_reference::unload(l);
     import::LUA_SHARED.unload()
 }

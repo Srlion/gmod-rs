@@ -126,6 +126,6 @@ impl PushToLua for &str {
 
 impl PushToLua for String {
     fn push_to_lua(&self, l: &State) {
-        l.push_string(&self);
+        l.push_string(self);
     }
 }

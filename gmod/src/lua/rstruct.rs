@@ -1,8 +1,8 @@
-use std::{collections::HashMap, ffi::c_void, mem::MaybeUninit, sync::Weak};
+use std::{collections::HashMap, ffi::c_void, mem::MaybeUninit};
 
 use anyhow::{bail, Result};
 
-use super::{reference::DynamicLuaReference, LuaCStr, LuaFunction, LuaReference, State};
+use super::{LuaCStr, LuaFunction, State};
 
 pub type Methods = &'static [(LuaCStr<'static>, LuaFunction)];
 
