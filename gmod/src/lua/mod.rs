@@ -155,6 +155,10 @@ pub struct LuaDebug {
     pub lastlinedefined: i32,
     pub short_src: [std::os::raw::c_char; LUA_IDSIZE],
     pub i_ci: i32,
+
+    /* Extended fields. Only valid if lj_debug_getinfo() is called with ext = 1.*/
+    pub nparams: i32,
+    pub isvararg: i32,
 }
 
 static mut GMOD_CLOSED: AtomicBool = AtomicBool::new(false);
