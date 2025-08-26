@@ -206,8 +206,8 @@ impl LuaState {
     }
 
     #[inline(always)]
-    pub unsafe fn remove(&self, index: i32) {
-        (LUA_SHARED.lua_remove)(*self, index)
+    pub fn remove(&self, index: i32) {
+        unsafe { (LUA_SHARED.lua_remove)(*self, index) }
     }
 
     #[inline(always)]
@@ -454,13 +454,15 @@ impl LuaState {
         }
     }
 
-    pub unsafe fn load_buffer(&self, buff: &[u8], name: LuaCStr) -> Result<(), LuaError> {
-        let lua_error_code = (LUA_SHARED.lual_loadbuffer)(
-            *self,
-            buff.as_ptr() as LuaString,
-            buff.len(),
-            name.as_ptr(),
-        );
+    pub fn load_buffer(&self, buff: &[u8], name: LuaCStr) -> Result<(), LuaError> {
+        let lua_error_code = unsafe {
+            (LUA_SHARED.lual_loadbuffer)(
+                *self,
+                buff.as_ptr() as LuaString,
+                buff.len(),
+                name.as_ptr(),
+            )
+        };
         if lua_error_code == 0 {
             Ok(())
         } else {
@@ -479,8 +481,8 @@ impl LuaState {
         traceback
     }
 
-    pub unsafe fn load_file(&self, path: LuaCStr) -> Result<(), LuaError> {
-        let lua_error_code = (LUA_SHARED.lual_loadfile)(*self, path.as_ptr());
+    pub fn load_file(&self, path: LuaCStr) -> Result<(), LuaError> {
+        let lua_error_code = unsafe { (LUA_SHARED.lual_loadfile)(*self, path.as_ptr()) };
         if lua_error_code == 0 {
             Ok(())
         } else {
@@ -554,7 +556,7 @@ impl LuaState {
     ///
     /// ```ignore
     /// #[lua_function]
-    /// unsafe fn foo(lua: gmod::lua::State) {
+    /// fn foo(lua: gmod::lua::State) {
     ///     lua.get_closure_arg(1);
     ///     let hello = lua.get_string(-1);
     ///     println!("{}", hello);
@@ -578,7 +580,7 @@ impl LuaState {
     ///
     /// ```ignore
     /// #[lua_function]
-    /// unsafe fn foo(lua: gmod::lua::State) {
+    /// fn foo(lua: gmod::lua::State) {
     ///     lua.push_closure_arg(1);
     ///     let hello = lua.get_string(-1);
     ///     println!("{}", hello);
@@ -679,7 +681,7 @@ impl LuaState {
         unsafe { (LUA_SHARED.lua_gettable)(*self, index) }
     }
 
-    pub unsafe fn check_binary_string(&self, arg: i32) -> Result<Vec<u8>> {
+    pub fn check_binary_string(&self, arg: i32) -> Result<Vec<u8>> {
         match self.get_binary_string(arg) {
             Some(s) => Ok(s),
             None => bail!(self.tag_error(arg, LUA_TSTRING)),
@@ -798,13 +800,13 @@ impl LuaState {
     }
 
     #[inline(always)]
-    pub unsafe fn next(&self, index: i32) -> i32 {
-        (LUA_SHARED.lua_next)(*self, index)
+    pub fn next(&self, index: i32) -> i32 {
+        unsafe { (LUA_SHARED.lua_next)(*self, index) }
     }
 
     #[inline(always)]
-    pub unsafe fn to_pointer(&self, index: i32) -> *const c_void {
-        (LUA_SHARED.lua_topointer)(*self, index)
+    pub fn to_pointer(&self, index: i32) -> *const c_void {
+        unsafe { (LUA_SHARED.lua_topointer)(*self, index) }
     }
 
     #[inline(always)]
