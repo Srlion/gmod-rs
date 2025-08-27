@@ -1,42 +1,51 @@
-use std::sync::OnceLock;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use tokio::runtime::{Builder, Runtime};
+use tokio::task::JoinHandle;
 use tokio_util::task::TaskTracker;
 
 use super::State as LuaState;
 
-static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-static TRACKER: OnceLock<TaskTracker> = OnceLock::new();
+struct TokioState {
+    runtime: Runtime,
+    tracker: TaskTracker,
+    graceful_shutdown_timeout_secs: u32,
+}
 
-static GRACEFUL_SHUTDOWN_TIMEOUT: OnceLock<u32> = OnceLock::new();
+static STATE: Mutex<Option<TokioState>> = Mutex::new(None);
 
 pub(crate) fn load(l: LuaState) -> i32 {
-    let worker_threads = get_max_worker_threads(l);
-    let _ = RUNTIME.set(
-        Builder::new_multi_thread()
-            .worker_threads(worker_threads.max(1).into())
-            .enable_all()
-            .thread_name(format!("gmod-goobie-rs:{}", env!("CARGO_PKG_VERSION")))
-            .build()
-            .expect("failed to build tokio runtime"),
-    );
+    let worker_threads = get_max_worker_threads(l).max(1) as usize;
+    let timeout = get_graceful_shutdown_timeout(l);
 
-    let _ = TRACKER.set(TaskTracker::new());
+    let runtime = Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_all()
+        .thread_name(format!("gmod-goobie-rs:{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .expect("failed to build tokio runtime");
 
-    let _ = GRACEFUL_SHUTDOWN_TIMEOUT.set(get_graceful_shutdown_timeout(l));
+    let tracker = TaskTracker::new();
+
+    let mut g = STATE.lock().unwrap();
+    g.replace(TokioState {
+        runtime,
+        tracker,
+        graceful_shutdown_timeout_secs: timeout,
+    });
 
     0
 }
 
 pub(crate) fn unload(_: LuaState) -> i32 {
-    let tracker = tracker();
-    tracker.close();
+    let mut g = STATE.lock().unwrap();
 
-    let runtime = runtime();
+    let Some(s) = g.take() else { return 0 };
 
-    if !tracker.is_empty() {
-        let timeout =
-            std::time::Duration::from_secs(*GRACEFUL_SHUTDOWN_TIMEOUT.get().unwrap() as u64);
+    s.tracker.close();
+    if !s.tracker.is_empty() {
+        let timeout = Duration::from_secs(s.graceful_shutdown_timeout_secs as u64);
 
         // print_goobie!(
         //     "Waiting up to {} seconds for {} connection(s) to complete...",
@@ -44,9 +53,9 @@ pub(crate) fn unload(_: LuaState) -> i32 {
         //     task_tracker.len()
         // );
 
-        runtime.block_on(async {
+        s.runtime.block_on(async {
             tokio::select! {
-                _ = tracker.wait() => {
+                _ = s.tracker.wait() => {
                     // print_goobie!("All connections have completed!");
                 },
                 _ = tokio::time::sleep(timeout) => {
@@ -55,30 +64,59 @@ pub(crate) fn unload(_: LuaState) -> i32 {
             }
         });
     }
+    s.runtime.shutdown_background();
+
+    // state is dropped here, so is everything inside it
 
     0
 }
 
 #[inline(always)]
-fn tracker() -> &'static TaskTracker {
-    TRACKER
-        .get()
-        .expect("goobie tokio task tracker not initialized")
-}
-
-#[inline(always)]
-fn runtime() -> &'static Runtime {
-    RUNTIME.get().expect("goobie tokio runtime not initialized")
-}
-
-/// Spawn a future and track it.
-#[inline(always)]
-pub fn spawn<F>(f: F) -> tokio::task::JoinHandle<F::Output>
+pub fn spawn<F>(fut: F) -> Option<JoinHandle<F::Output>>
 where
     F: std::future::Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    runtime().spawn(tracker().track_future(f))
+    let g = STATE.lock().unwrap();
+    let s = g.as_ref()?;
+    Some(s.runtime.spawn(s.tracker.track_future(fut)))
+}
+
+#[inline(always)]
+pub fn spawn_detached<F>(fut: F)
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let g = STATE.lock().unwrap();
+    let Some(s) = g.as_ref() else {
+        return;
+    };
+    s.runtime.spawn(s.tracker.track_future(fut));
+}
+
+#[inline(always)]
+pub fn spawn_untracked<F>(fut: F) -> Option<JoinHandle<F::Output>>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let g = STATE.lock().unwrap();
+    let s = g.as_ref()?;
+    Some(s.runtime.spawn(fut))
+}
+
+#[inline(always)]
+pub fn spawn_untracked_detached<F>(fut: F)
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let g = STATE.lock().unwrap();
+    let Some(s) = g.as_ref() else {
+        return;
+    };
+    s.runtime.spawn(fut);
 }
 
 fn get_max_worker_threads(l: LuaState) -> u16 {

@@ -184,7 +184,7 @@ pub unsafe fn load(l: State) {
     super::tokio_tasks::load(l);
 
     rstruct::load(l);
-    super::next_tick::init(l);
+    super::next_tick::load(l);
     GMOD_CLOSED.store(false, std::sync::atomic::Ordering::Release);
 }
 
@@ -194,6 +194,8 @@ pub unsafe fn post_load(l: State) {
 
 #[inline(always)]
 pub unsafe fn unload(l: State) {
+    super::next_tick::unload(l);
+
     #[cfg(feature = "tokio-tasks")]
     super::tokio_tasks::unload(l);
 

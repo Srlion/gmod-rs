@@ -1,15 +1,29 @@
 use super::{next_tick_queue::NextTickQueue, State};
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
-static NEXT_TICK: OnceLock<NextTickQueue> = OnceLock::new();
+static NEXT_TICK: Mutex<Option<NextTickQueue>> = Mutex::new(None);
 
-pub fn init(state: State) {
-    let _ = NEXT_TICK.set(NextTickQueue::new(state));
+pub fn load(l: State) {
+    let mut q = NEXT_TICK.lock().unwrap();
+    q.replace(NextTickQueue::new(l));
+}
+
+pub fn unload(state: State) {
+    let mut q = NEXT_TICK.lock().unwrap();
+    if let Some(q) = q.take() {
+        q.flush(state);
+    }
 }
 
 #[inline(always)]
-fn global() -> &'static NextTickQueue {
-    NEXT_TICK.get().expect("NEXT_TICK not initialized")
+fn with_next_tick<F>(f: F)
+where
+    F: FnOnce(&NextTickQueue),
+{
+    let q = NEXT_TICK.lock().unwrap();
+    if let Some(q) = q.as_ref() {
+        f(q);
+    }
 }
 
 #[inline(always)]
@@ -17,12 +31,10 @@ pub fn next_tick<F>(callback: F)
 where
     F: FnOnce(State) + Send + 'static,
 {
-    let q = global();
-    q.queue(callback);
+    with_next_tick(|q| q.queue(callback));
 }
 
 #[inline(always)]
 pub fn flush_next_tick(l: State) {
-    let q = global();
-    q.flush(l);
+    with_next_tick(|q| q.flush(l));
 }
