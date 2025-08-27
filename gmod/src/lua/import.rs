@@ -409,14 +409,19 @@ impl LuaShared {
 
     #[cfg(all(target_os = "windows", target_pointer_width = "64"))]
     pub unsafe fn find_lua_shared() -> (Library, &'static str) {
-        crate::open_library_raw!("bin/win64/lua_shared.dll").expect("Failed to load lua_shared.dll")
+        crate::__private__gmod_rs__try_chained_open! {
+            crate::open_library_raw!("bin/win64/lua_shared.dll"),
+            crate::open_library_raw!("lua_shared.dll"),
+        }
+        .expect("Failed to load lua_shared.dll")
     }
 
     #[cfg(all(target_os = "windows", target_pointer_width = "32"))]
     pub unsafe fn find_lua_shared() -> (Library, &'static str) {
         crate::__private__gmod_rs__try_chained_open! {
             crate::open_library_raw!("garrysmod/bin/lua_shared.dll"),
-            crate::open_library_raw!("bin/lua_shared.dll")
+            crate::open_library_raw!("bin/lua_shared.dll"),
+            crate::open_library_raw!("lua_shared.dll")
         }
         .expect("Failed to load lua_shared.dll")
     }
@@ -426,25 +431,37 @@ impl LuaShared {
         crate::__private__gmod_rs__try_chained_open! {
             crate::open_library_raw!("garrysmod/bin/lua_shared_srv.so"),
             crate::open_library_raw!("bin/linux32/lua_shared.so"),
-            crate::open_library_raw!("garrysmod/bin/lua_shared.so")
+            crate::open_library_raw!("garrysmod/bin/lua_shared.so"),
+            crate::open_library_raw!("lua_shared.so"),
+            crate::open_library_raw!("lua_shared_srv.so")
         }
         .expect("Failed to find lua_shared.so or lua_shared_srv.so")
     }
 
     #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
     pub unsafe fn find_lua_shared() -> (Library, &'static str) {
-        crate::open_library_raw!("bin/linux64/lua_shared.so").expect("Failed to find lua_shared.so")
+        crate::__private__gmod_rs__try_chained_open! {
+            crate::open_library_raw!("bin/linux64/lua_shared.so"),
+            crate::open_library_raw!("lua_shared.so")
+        }
+        .expect("Failed to find lua_shared.so")
     }
 
     #[cfg(all(target_os = "macos", target_pointer_width = "32"))]
     pub unsafe fn find_lua_shared() -> (Library, &'static str) {
-        crate::open_library_raw!("garrysmod/bin/lua_shared.dylib")
-            .expect("Failed to find lua_shared.dylib")
+        crate::__private__gmod_rs__try_chained_open! {
+            crate::open_library_raw!("lua_shared.dylib"),
+            crate::open_library_raw!("garrysmod/bin/lua_shared.dylib")
+        }
+        .expect("Failed to find lua_shared.dylib")
     }
 
     #[cfg(all(target_os = "macos", target_pointer_width = "64"))]
     pub unsafe fn find_lua_shared() -> (Library, &'static str) {
-        crate::open_library_raw!("GarrysMod_Signed.app/Contents/MacOS/lua_shared.dylib")
-            .expect("Failed to find lua_shared.dylib")
+        crate::__private__gmod_rs__try_chained_open! {
+            crate::open_library_raw!("lua_shared.dylib"),
+            crate::open_library_raw!("GarrysMod_Signed.app/Contents/MacOS/lua_shared.dylib")
+        }
+        .expect("Failed to find lua_shared.dylib")
     }
 }
