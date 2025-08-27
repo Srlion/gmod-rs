@@ -21,6 +21,8 @@ pub(crate) fn load(l: LuaState) -> i32 {
             .expect("failed to build tokio runtime"),
     );
 
+    let _ = TRACKER.set(TaskTracker::new());
+
     let _ = GRACEFUL_SHUTDOWN_TIMEOUT.set(get_graceful_shutdown_timeout(l));
 
     0
@@ -53,8 +55,6 @@ pub(crate) fn unload(_: LuaState) -> i32 {
             }
         });
     }
-
-    let _ = TRACKER.set(TaskTracker::new());
 
     0
 }
