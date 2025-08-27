@@ -39,34 +39,20 @@ pub(crate) fn load(l: LuaState) -> i32 {
 }
 
 pub(crate) fn unload(_: LuaState) -> i32 {
-    let mut g = STATE.lock().unwrap();
-
-    let Some(s) = g.take() else { return 0 };
+    let s = {
+        let mut g = STATE.lock().unwrap();
+        g.take()
+    };
+    let Some(s) = s else { return 0 };
 
     s.tracker.close();
-    if !s.tracker.is_empty() {
-        let timeout = Duration::from_secs(s.graceful_shutdown_timeout_secs as u64);
 
-        // print_goobie!(
-        //     "Waiting up to {} seconds for {} connection(s) to complete...",
-        //     timeout.as_secs(),
-        //     task_tracker.len()
-        // );
+    let timeout = Duration::from_secs(s.graceful_shutdown_timeout_secs as u64);
+    let _ = s
+        .runtime
+        .block_on(async { tokio::time::timeout(timeout, s.tracker.wait()).await });
 
-        s.runtime.block_on(async {
-            tokio::select! {
-                _ = s.tracker.wait() => {
-                    // print_goobie!("All connections have completed!");
-                },
-                _ = tokio::time::sleep(timeout) => {
-                    // print_goobie!("Timed out waiting for connections to complete!");
-                },
-            }
-        });
-    }
-    s.runtime.shutdown_background();
-
-    // state is dropped here, so is everything inside it
+    s.runtime.shutdown_timeout(timeout);
 
     0
 }
