@@ -145,7 +145,6 @@ pub static mut LUA_SHARED: LuaSharedInterface = LuaSharedInterface(
 );
 
 pub struct LuaShared {
-    pub(crate) library: &'static libloading::Library,
     pub lual_newstate: Symbol<'static, unsafe extern "C-unwind" fn() -> LuaState>,
     pub lual_openlibs: Symbol<'static, unsafe extern "C-unwind" fn(state: LuaState)>,
     pub lual_register: Symbol<
@@ -391,7 +390,6 @@ impl LuaShared {
                 lua_setfenv: find_symbol!("lua_setfenv"),
                 lua_getfenv: find_symbol!("lua_getfenv"),
                 lual_getmetafield: find_symbol!("luaL_getmetafield"),
-                library,
             }
         }
     }
