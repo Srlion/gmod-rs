@@ -1,59 +1,92 @@
+// the weird design in here is because, if you spawn the async runtime on main thread, it stops dlclose on linux to actually
+// deload the module, which causes `static`s to be alive, so if they are loaded again, they are basically with old memory
+// so to go around this, chatgpt told me a nice solution which is spawning the async runtime on a separate thread
+// which actually solves the issue and dlclose safely close the process
+
 use std::sync::Mutex;
+use std::thread;
 use std::time::Duration;
 
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::{Builder, Handle};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_util::task::TaskTracker;
 
 use super::State as LuaState;
 
 struct TokioState {
-    runtime: Runtime,
+    handle: Handle,
     tracker: TaskTracker,
-    graceful_shutdown_timeout_secs: u32,
+    stop_tx: oneshot::Sender<()>,
+    join: Option<thread::JoinHandle<()>>,
 }
 
 static STATE: Mutex<Option<TokioState>> = Mutex::new(None);
 
 pub(crate) fn load(l: LuaState) -> i32 {
     let worker_threads = get_max_worker_threads(l).max(1) as usize;
-    let timeout = get_graceful_shutdown_timeout(l);
+    let timeout_secs = get_graceful_shutdown_timeout(l);
 
-    let runtime = Builder::new_multi_thread()
-        .worker_threads(worker_threads)
-        .enable_all()
-        .thread_name(format!("gmod-goobie-rs:{}", env!("CARGO_PKG_VERSION")))
-        .build()
-        .expect("failed to build tokio runtime");
+    // channel to stop the supervisor
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+    // channel to get initialized artifacts back from the supervisor
+    let (ready_tx, ready_rx) = oneshot::channel::<(Handle, TaskTracker)>();
 
-    let tracker = TaskTracker::new();
+    let thread_name = format!("gmod-goobie-rs:{}", env!("CARGO_PKG_VERSION"));
+    let join = thread::Builder::new()
+        .name(thread_name.clone())
+        .spawn(move || {
+            // Build the multi-thread Tokio runtime *inside this thread*.
+            let runtime = Builder::new_multi_thread()
+                .worker_threads(worker_threads)
+                .enable_all()
+                .thread_name(thread_name)
+                .build()
+                .expect("failed to build tokio runtime");
+
+            let tracker = TaskTracker::new();
+
+            // Hand a clone of the handle & tracker back to the caller thread.
+            let _ = ready_tx.send((runtime.handle().clone(), tracker.clone()));
+
+            // Wait for stop signal.
+            let _ = stop_rx.blocking_recv();
+
+            // Graceful shutdown happens here, on the same thread that created the runtime.
+            tracker.close();
+            let timeout = Duration::from_secs(timeout_secs as u64);
+            let _ = runtime.block_on(async { tokio::time::timeout(timeout, tracker.wait()).await });
+            runtime.shutdown_timeout(timeout);
+            // Thread exits -> its TLS destructors run -> loader may unmap the DSO.
+        })
+        .expect("failed to spawn supervisor thread");
+
+    // Receive the handle/tracker produced by the supervisor.
+    let (handle, tracker) = ready_rx.blocking_recv().expect("supervisor init failed");
 
     let mut g = STATE.lock().unwrap();
-    g.replace(TokioState {
-        runtime,
+    *g = Some(TokioState {
+        handle,
         tracker,
-        graceful_shutdown_timeout_secs: timeout,
+        stop_tx,
+        join: Some(join),
     });
 
     0
 }
 
 pub(crate) fn unload(_: LuaState) -> i32 {
-    let s = {
+    let state = {
         let mut g = STATE.lock().unwrap();
         g.take()
     };
-    let Some(s) = s else { return 0 };
+    let Some(mut s) = state else { return 0 };
 
-    s.tracker.close();
-
-    let timeout = Duration::from_secs(s.graceful_shutdown_timeout_secs as u64);
-    let _ = s
-        .runtime
-        .block_on(async { tokio::time::timeout(timeout, s.tracker.wait()).await });
-
-    s.runtime.shutdown_timeout(timeout);
-
+    // Tell the supervisor to stop and join it.
+    let _ = s.stop_tx.send(());
+    if let Some(j) = s.join.take() {
+        let _ = j.join();
+    }
     0
 }
 
@@ -65,20 +98,7 @@ where
 {
     let g = STATE.lock().unwrap();
     let s = g.as_ref()?;
-    Some(s.runtime.spawn(s.tracker.track_future(fut)))
-}
-
-#[inline(always)]
-pub fn spawn_detached<F>(fut: F)
-where
-    F: std::future::Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    let g = STATE.lock().unwrap();
-    let Some(s) = g.as_ref() else {
-        return;
-    };
-    s.runtime.spawn(s.tracker.track_future(fut));
+    Some(s.handle.spawn(s.tracker.track_future(fut)))
 }
 
 #[inline(always)]
@@ -89,20 +109,7 @@ where
 {
     let g = STATE.lock().unwrap();
     let s = g.as_ref()?;
-    Some(s.runtime.spawn(fut))
-}
-
-#[inline(always)]
-pub fn spawn_untracked_detached<F>(fut: F)
-where
-    F: std::future::Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    let g = STATE.lock().unwrap();
-    let Some(s) = g.as_ref() else {
-        return;
-    };
-    s.runtime.spawn(fut);
+    Some(s.handle.spawn(fut))
 }
 
 fn get_max_worker_threads(l: LuaState) -> u16 {
