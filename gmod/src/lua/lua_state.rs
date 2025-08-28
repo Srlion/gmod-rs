@@ -454,6 +454,31 @@ impl LuaState {
         }
     }
 
+    pub fn load_buffer_x(
+        &self,
+        buff: &[u8],
+        name: LuaCStr,
+        mode: Option<&LuaCStr>,
+    ) -> Result<(), LuaError> {
+        let mode_ptr: *const std::os::raw::c_char =
+            mode.map(|s| s.as_ptr()).unwrap_or(std::ptr::null());
+
+        let lua_error_code = unsafe {
+            (LUA_SHARED.lual_loadbufferx)(
+                *self,
+                buff.as_ptr() as LuaString,
+                buff.len(),
+                name.as_ptr(),
+                mode_ptr,
+            )
+        };
+        if lua_error_code == 0 {
+            Ok(())
+        } else {
+            Err(LuaError::from_lua_state(*self, lua_error_code))
+        }
+    }
+
     pub fn load_buffer(&self, buff: &[u8], name: LuaCStr) -> Result<(), LuaError> {
         let lua_error_code = unsafe {
             (LUA_SHARED.lual_loadbuffer)(

@@ -164,6 +164,16 @@ pub struct LuaShared {
             name: LuaString,
         ) -> i32,
     >,
+    pub lual_loadbufferx: Symbol<
+        'static,
+        unsafe extern "C-unwind" fn(
+            state: LuaState,
+            buff: LuaString,
+            sz: LuaSize,
+            name: LuaString,
+            mode: LuaString,
+        ) -> i32,
+    >,
     pub lual_traceback: Symbol<
         'static,
         unsafe extern "C-unwind" fn(state: LuaState, state1: LuaState, msg: LuaString, level: i32),
@@ -335,6 +345,7 @@ impl LuaShared {
                 lual_loadfile: find_symbol!("luaL_loadfile"),
                 lual_loadstring: find_symbol!("luaL_loadstring"),
                 lual_loadbuffer: find_symbol!("luaL_loadbuffer"),
+                lual_loadbufferx: find_symbol!("luaL_loadbufferx"),
                 lual_traceback: find_symbol!("luaL_traceback"),
                 lua_getfield: find_symbol!("lua_getfield"),
                 lua_pushvalue: find_symbol!("lua_pushvalue"),
