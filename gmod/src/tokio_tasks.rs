@@ -11,12 +11,14 @@ struct TokioState {
     runtime: Runtime,
     handle: Handle,
     tracker: TaskTracker,
+    graceful_shutdown_timeout: u32,
 }
 
 static STATE: Mutex<Option<TokioState>> = Mutex::new(None);
 
 pub(crate) fn load(l: LuaState) -> i32 {
     let worker_threads = get_max_worker_threads(l).max(1) as usize;
+    let graceful_shutdown_timeout = get_graceful_shutdown_timeout(l);
 
     let runtime = Builder::new_multi_thread()
         .worker_threads(worker_threads)
@@ -32,21 +34,21 @@ pub(crate) fn load(l: LuaState) -> i32 {
         handle: runtime.handle().clone(),
         runtime,
         tracker,
+        graceful_shutdown_timeout,
     });
 
     0
 }
 
-pub(crate) fn unload(l: LuaState) -> i32 {
-    let timeout_secs = get_graceful_shutdown_timeout(l);
-    let timeout = Duration::from_secs(timeout_secs as u64);
-
+pub(crate) fn unload(_: LuaState) -> i32 {
     // take ownership so we can drop everything cleanly after shutdown
-    let state = {
+    let s = {
         let mut g = STATE.lock().unwrap();
         g.take()
     };
-    let Some(s) = state else { return 0 };
+    let Some(s) = s else { return 0 };
+
+    let timeout = Duration::from_secs(s.graceful_shutdown_timeout as u64);
 
     // close new task intake and wait for tracked tasks to finish (with timeout)
     s.tracker.close();
