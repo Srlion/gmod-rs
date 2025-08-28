@@ -1,92 +1,61 @@
-// the weird design in here is because, if you spawn the async runtime on main thread, it stops dlclose on linux to actually
-// deload the module, which causes `static`s to be alive, so if they are loaded again, they are basically with old memory
-// so to go around this, chatgpt told me a nice solution which is spawning the async runtime on a separate thread
-// which actually solves the issue and dlclose safely close the process
-
 use std::sync::Mutex;
-use std::thread;
 use std::time::Duration;
 
-use tokio::runtime::{Builder, Handle};
-use tokio::sync::oneshot;
+use tokio::runtime::{Builder, Handle, Runtime};
 use tokio::task::JoinHandle;
 use tokio_util::task::TaskTracker;
 
 use super::State as LuaState;
 
 struct TokioState {
+    runtime: Runtime,
     handle: Handle,
     tracker: TaskTracker,
-    stop_tx: oneshot::Sender<()>,
-    join: Option<thread::JoinHandle<()>>,
 }
 
 static STATE: Mutex<Option<TokioState>> = Mutex::new(None);
 
 pub(crate) fn load(l: LuaState) -> i32 {
     let worker_threads = get_max_worker_threads(l).max(1) as usize;
-    let timeout_secs = get_graceful_shutdown_timeout(l);
 
-    // channel to stop the supervisor
-    let (stop_tx, stop_rx) = oneshot::channel::<()>();
-    // channel to get initialized artifacts back from the supervisor
-    let (ready_tx, ready_rx) = oneshot::channel::<(Handle, TaskTracker)>();
+    let runtime = Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_all()
+        .thread_name(format!("gmod-goobie-rs:{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .expect("failed to build tokio runtime");
 
-    let thread_name = format!("gmod-goobie-rs:{}", env!("CARGO_PKG_VERSION"));
-    let join = thread::Builder::new()
-        .name(thread_name.clone())
-        .spawn(move || {
-            // Build the multi-thread Tokio runtime *inside this thread*.
-            let runtime = Builder::new_multi_thread()
-                .worker_threads(worker_threads)
-                .enable_all()
-                .thread_name(thread_name)
-                .build()
-                .expect("failed to build tokio runtime");
-
-            let tracker = TaskTracker::new();
-
-            // Hand a clone of the handle & tracker back to the caller thread.
-            let _ = ready_tx.send((runtime.handle().clone(), tracker.clone()));
-
-            // Wait for stop signal.
-            let _ = stop_rx.blocking_recv();
-
-            // Graceful shutdown happens here, on the same thread that created the runtime.
-            tracker.close();
-            let timeout = Duration::from_secs(timeout_secs as u64);
-            let _ = runtime.block_on(async { tokio::time::timeout(timeout, tracker.wait()).await });
-            runtime.shutdown_timeout(timeout);
-            // Thread exits -> its TLS destructors run -> loader may unmap the DSO.
-        })
-        .expect("failed to spawn supervisor thread");
-
-    // Receive the handle/tracker produced by the supervisor.
-    let (handle, tracker) = ready_rx.blocking_recv().expect("supervisor init failed");
+    let tracker = TaskTracker::new();
 
     let mut g = STATE.lock().unwrap();
     *g = Some(TokioState {
-        handle,
+        handle: runtime.handle().clone(),
+        runtime,
         tracker,
-        stop_tx,
-        join: Some(join),
     });
 
     0
 }
 
-pub(crate) fn unload(_: LuaState) -> i32 {
+pub(crate) fn unload(l: LuaState) -> i32 {
+    let timeout_secs = get_graceful_shutdown_timeout(l);
+    let timeout = Duration::from_secs(timeout_secs as u64);
+
+    // take ownership so we can drop everything cleanly after shutdown
     let state = {
         let mut g = STATE.lock().unwrap();
         g.take()
     };
-    let Some(mut s) = state else { return 0 };
+    let Some(s) = state else { return 0 };
 
-    // Tell the supervisor to stop and join it.
-    let _ = s.stop_tx.send(());
-    if let Some(j) = s.join.take() {
-        let _ = j.join();
-    }
+    // close new task intake and wait for tracked tasks to finish (with timeout)
+    s.tracker.close();
+    let _ = s
+        .runtime
+        .block_on(async { tokio::time::timeout(timeout, s.tracker.wait()).await });
+
+    s.runtime.shutdown_timeout(timeout);
+
     0
 }
 
