@@ -420,7 +420,7 @@ impl LuaShared {
     pub unsafe fn find_lua_shared() -> (Library, &'static str) {
         crate::__private__gmod_rs__try_chained_open! {
             crate::open_library_raw!("bin/win64/lua_shared.dll"),
-            crate::open_library_raw!("lua_shared.dll"),
+            crate::open_library_raw!("lua_shared.dll")
         }
         .expect("Failed to load lua_shared.dll")
     }
