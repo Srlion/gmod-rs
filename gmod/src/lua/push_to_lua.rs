@@ -24,7 +24,7 @@ impl PushToLua for i32 {
 
 impl PushToLua for i64 {
     fn push_to_lua(&self, l: &State) {
-        if self.abs() <= LUA_NUMBER_MAX_SAFE_INTEGER {
+        if *self >= -(LUA_NUMBER_MAX_SAFE_INTEGER) && *self <= LUA_NUMBER_MAX_SAFE_INTEGER {
             l.raw_push_number(*self as LuaNumber);
         } else {
             l.push_string(&self.to_string());
@@ -34,7 +34,8 @@ impl PushToLua for i64 {
 
 impl PushToLua for i128 {
     fn push_to_lua(&self, l: &State) {
-        if self.abs() <= LUA_NUMBER_MAX_SAFE_INTEGER as i128 {
+        let limit = LUA_NUMBER_MAX_SAFE_INTEGER as i128;
+        if *self >= -limit && *self <= limit {
             l.raw_push_number(*self as LuaNumber);
         } else {
             l.push_string(&self.to_string());
@@ -44,7 +45,8 @@ impl PushToLua for i128 {
 
 impl PushToLua for isize {
     fn push_to_lua(&self, l: &State) {
-        if self.abs() <= LUA_NUMBER_MAX_SAFE_INTEGER as isize {
+        let limit = LUA_NUMBER_MAX_SAFE_INTEGER as isize;
+        if *self >= -limit && *self <= limit {
             l.raw_push_number(*self as LuaNumber);
         } else {
             l.push_string(&self.to_string());
