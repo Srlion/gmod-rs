@@ -15,7 +15,6 @@ pub fn unload(state: State) {
     }
 }
 
-#[inline(always)]
 fn with_next_tick<F>(f: F)
 where
     F: FnOnce(&NextTickQueue),
@@ -26,7 +25,6 @@ where
     }
 }
 
-#[inline(always)]
 pub fn next_tick<F>(callback: F)
 where
     F: FnOnce(State) + Send + 'static,
@@ -34,7 +32,6 @@ where
     with_next_tick(|q| q.queue(callback));
 }
 
-#[inline(always)]
 pub fn flush_next_tick(l: State) {
     with_next_tick(|q| q.flush(l));
 }

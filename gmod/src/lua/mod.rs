@@ -161,24 +161,23 @@ pub struct LuaDebug {
     pub isvararg: i32,
 }
 
-static mut GMOD_CLOSED: AtomicBool = AtomicBool::new(false);
+static GMOD_CLOSED: AtomicBool = AtomicBool::new(false);
 
 pub fn is_open() -> bool {
     !is_closed()
 }
 
 pub fn is_closed() -> bool {
-    unsafe { GMOD_CLOSED.load(std::sync::atomic::Ordering::Acquire) }
+    GMOD_CLOSED.load(std::sync::atomic::Ordering::Acquire)
 }
 
 pub fn set_closed() {
-    unsafe { GMOD_CLOSED.store(true, std::sync::atomic::Ordering::Release) };
+    GMOD_CLOSED.store(true, std::sync::atomic::Ordering::Release);
 }
 
-#[inline(always)]
 /// Loads lua_shared and imports all functions. This is already done for you if you add `#[gmod::gmod13_open]` to your `gmod13_open` function.
-pub unsafe fn load(l: State) {
-    import::LUA_SHARED.load();
+pub fn load(l: State) {
+    unsafe { import::LUA_SHARED.load() };
 
     #[cfg(feature = "tokio-tasks")]
     super::tokio_tasks::load(l);
@@ -192,8 +191,7 @@ pub unsafe fn post_load(l: State) {
     rstruct::post_load(l);
 }
 
-#[inline(always)]
-pub unsafe fn unload(l: State) {
+pub fn unload(l: State) {
     super::next_tick::unload(l);
 
     #[cfg(feature = "tokio-tasks")]
@@ -201,5 +199,5 @@ pub unsafe fn unload(l: State) {
 
     // set_closed is called in the #[gmod13_close] macro, because unload is deferred
     rstruct::unload(l);
-    import::LUA_SHARED.unload()
+    unsafe { import::LUA_SHARED.unload() }
 }

@@ -61,7 +61,6 @@ pub(crate) fn unload(_: LuaState) -> i32 {
     0
 }
 
-#[inline(always)]
 pub fn spawn<F>(fut: F) -> Option<JoinHandle<F::Output>>
 where
     F: std::future::Future + Send + 'static,
@@ -72,7 +71,6 @@ where
     Some(s.handle.spawn(s.tracker.track_future(fut)))
 }
 
-#[inline(always)]
 pub fn spawn_untracked<F>(fut: F) -> Option<JoinHandle<F::Output>>
 where
     F: std::future::Future + Send + 'static,
