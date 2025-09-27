@@ -44,7 +44,7 @@ pub const LUA_ERRMEM: i32 = 4;
 pub const LUA_ERRERR: i32 = 5;
 pub const LUA_ERRFILE: i32 = LUA_ERRERR + 1;
 
-pub const LUA_IDSIZE: usize = 60;
+pub const LUA_IDSIZE: usize = 128;
 
 #[repr(C)]
 pub struct LuaReg {
